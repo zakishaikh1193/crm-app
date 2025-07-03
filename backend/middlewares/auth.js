@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import pool from '../config/database.js';
+import { getDatabase } from '../config/database.js';
 
 export const authenticateUserOrAdmin = async (req, res, next) => {
   try {
@@ -12,19 +12,18 @@ export const authenticateUserOrAdmin = async (req, res, next) => {
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
     
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
       
       // Fetch user details from database to ensure user still exists and is active
-      const [users] = await pool.execute(
+      const db = getDatabase();
+      const user = await db.get(
         'SELECT id, email, role, is_active FROM users WHERE id = ?',
         [decoded.id]
       );
 
-      if (users.length === 0) {
+      if (!user) {
         return res.status(401).json({ error: 'Invalid token. User not found.' });
       }
-
-      const user = users[0];
       
       if (!user.is_active) {
         return res.status(401).json({ error: 'Account is inactive.' });

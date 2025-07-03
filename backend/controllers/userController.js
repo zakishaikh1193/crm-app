@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import pool from '../config/database.js';
+import { getDatabase } from '../config/database.js';
 
 // Generate JWT token
 const generateToken = (user) => {
@@ -10,7 +10,7 @@ const generateToken = (user) => {
       email: user.email, 
       role: user.role 
     },
-    process.env.JWT_SECRET,
+    process.env.JWT_SECRET || 'your-secret-key',
     { expiresIn: '24h' }
   );
 };
@@ -25,13 +25,15 @@ export const registerUser = async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
+    const db = getDatabase();
+
     // Check if user already exists
-    const [existingUsers] = await pool.execute(
+    const existingUser = await db.get(
       'SELECT id FROM users WHERE email = ?',
       [email]
     );
 
-    if (existingUsers.length > 0) {
+    if (existingUser) {
       return res.status(409).json({ error: 'User with this email already exists' });
     }
 
@@ -40,18 +42,17 @@ export const registerUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     // Create user
-    const [result] = await pool.execute(
+    const result = await db.run(
       'INSERT INTO users (email, password, first_name, last_name, role) VALUES (?, ?, ?, ?, ?)',
       [email, hashedPassword, first_name || null, last_name || null, role]
     );
 
     // Fetch created user
-    const [newUsers] = await pool.execute(
+    const newUser = await db.get(
       'SELECT id, email, first_name, last_name, role, is_active FROM users WHERE id = ?',
-      [result.insertId]
+      [result.lastID]
     );
 
-    const newUser = newUsers[0];
     const token = generateToken(newUser);
 
     res.status(201).json({
@@ -82,17 +83,17 @@ export const loginUser = async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
+    const db = getDatabase();
+
     // Find user by email
-    const [users] = await pool.execute(
+    const user = await db.get(
       'SELECT id, email, password, first_name, last_name, role, is_active FROM users WHERE email = ?',
       [email]
     );
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-
-    const user = users[0];
 
     // Check if user is active
     if (!user.is_active) {
@@ -130,16 +131,17 @@ export const loginUser = async (req, res) => {
 // Get current user profile
 export const getCurrentUser = async (req, res) => {
   try {
-    const [users] = await pool.execute(
+    const db = getDatabase();
+    const user = await db.get(
       'SELECT id, email, first_name, last_name, role, is_active, created_at FROM users WHERE id = ?',
       [req.user.id]
     );
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ user: users[0] });
+    res.json({ user });
   } catch (error) {
     console.error('Get current user error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -152,20 +154,21 @@ export const updateUser = async (req, res) => {
     const { first_name, last_name } = req.body;
     const userId = req.user.id;
 
-    await pool.execute(
-      'UPDATE users SET first_name = ?, last_name = ? WHERE id = ?',
+    const db = getDatabase();
+    await db.run(
+      'UPDATE users SET first_name = ?, last_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [first_name || null, last_name || null, userId]
     );
 
     // Fetch updated user
-    const [users] = await pool.execute(
+    const user = await db.get(
       'SELECT id, email, first_name, last_name, role, is_active FROM users WHERE id = ?',
       [userId]
     );
 
     res.json({
       message: 'Profile updated successfully',
-      user: users[0]
+      user
     });
   } catch (error) {
     console.error('Update user error:', error);

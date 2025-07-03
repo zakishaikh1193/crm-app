@@ -1,146 +1,42 @@
-import mysql from 'mysql2/promise';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
-const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'crm_new',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  timezone: '+00:00'
-};
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// Create connection pool
-const pool = mysql.createPool(dbConfig);
+// Database configuration
+const dbPath = path.join(__dirname, '../data/crm.db');
 
-// Test database connection
-export async function testConnection() {
-  try {
-    const connection = await pool.getConnection();
-    console.log('✅ Database connected successfully');
-    connection.release();
-    return true;
-  } catch (error) {
-    console.error('❌ Database connection failed:', error.message);
-    return false;
-  }
-}
+let db = null;
 
-// Initialize database tables
+// Initialize database connection
 export async function initializeDatabase() {
   try {
-    const connection = await pool.getConnection();
-    
-    // Create database if it doesn't exist
-   await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\``);
-    await connection.query(`USE \`${dbConfig.database}\``);
+    // Create data directory if it doesn't exist
+    const dataDir = path.dirname(dbPath);
+    const fs = await import('fs');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
 
-    // Create users table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        email VARCHAR(191) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        first_name VARCHAR(100),
-        last_name VARCHAR(100),
-        role ENUM('admin', 'manager', 'user') DEFAULT 'user',
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
+    // Open database connection
+    db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database
+    });
 
-    // Create companies table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS companies (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        industry VARCHAR(100),
-        website VARCHAR(255),
-        phone VARCHAR(50),
-        email VARCHAR(191),
-        address TEXT,
-        city VARCHAR(100),
-        state VARCHAR(100),
-        postal_code VARCHAR(20),
-        country VARCHAR(100),
-        custom_fields JSON,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_name (name),
-        INDEX idx_industry (industry)
-      )
-    `);
+    // Enable foreign keys
+    await db.exec('PRAGMA foreign_keys = ON');
 
-    // Create contacts table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS contacts (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        company_id INT,
-        owner_id INT NOT NULL,
-        first_name VARCHAR(100),
-        last_name VARCHAR(100),
-        full_name VARCHAR(200),
-        email VARCHAR(191),
-        phone VARCHAR(50),
-        mobile VARCHAR(50),
-        job_title VARCHAR(100),
-        department VARCHAR(100),
-        company_name VARCHAR(255),
-        company_email VARCHAR(191),
-        company_phone VARCHAR(50),
-        address TEXT,
-        city VARCHAR(100),
-        state VARCHAR(100),
-        postal_code VARCHAR(20),
-        country VARCHAR(100),
-        lead_source VARCHAR(100),
-        lead_status ENUM('new', 'contacted', 'qualified', 'unqualified', 'customer') DEFAULT 'new',
-        data_quality_status ENUM('good', 'needs_review', 'poor') DEFAULT 'needs_review',
-        notes TEXT,
-        tags VARCHAR(500),
-        custom_fields JSON,
-        is_merged BOOLEAN DEFAULT FALSE,
-        merged_into_id INT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
-        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
-        FOREIGN KEY (merged_into_id) REFERENCES contacts(id) ON DELETE SET NULL,
-        INDEX idx_email (email),
-        INDEX idx_full_name (full_name),
-        INDEX idx_company_id (company_id),
-        INDEX idx_owner_id (owner_id),
-        INDEX idx_lead_status (lead_status)
-      )
-    `);
+    // Create tables
+    await createTables();
 
-    // Create contact_interactions table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS contact_interactions (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        contact_id INT NOT NULL,
-        user_id INT NOT NULL,
-        interaction_type ENUM('call', 'email', 'meeting', 'note', 'task') NOT NULL,
-        subject VARCHAR(255),
-        description TEXT,
-        interaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        follow_up_date TIMESTAMP NULL,
-        status ENUM('completed', 'pending', 'cancelled') DEFAULT 'completed',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        INDEX idx_contact_id (contact_id),
-        INDEX idx_interaction_date (interaction_date)
-      )
-    `);
-
-    console.log('✅ Database tables initialized successfully');
-    connection.release();
+    console.log('✅ Database connected and initialized successfully');
     return true;
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
@@ -148,9 +44,133 @@ export async function initializeDatabase() {
   }
 }
 
-// Initialize database on startup
-testConnection().then(() => {
-  initializeDatabase();
-});
+async function createTables() {
+  // Create users table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      first_name TEXT,
+      last_name TEXT,
+      role TEXT DEFAULT 'user' CHECK (role IN ('admin', 'manager', 'user')),
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
-export default pool;
+  // Create companies table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      industry TEXT,
+      website TEXT,
+      phone TEXT,
+      email TEXT,
+      address TEXT,
+      city TEXT,
+      state TEXT,
+      postal_code TEXT,
+      country TEXT,
+      custom_fields TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Create contacts table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS contacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER,
+      owner_id INTEGER NOT NULL,
+      first_name TEXT,
+      last_name TEXT,
+      full_name TEXT,
+      email TEXT,
+      phone TEXT,
+      mobile TEXT,
+      job_title TEXT,
+      department TEXT,
+      company_name TEXT,
+      company_email TEXT,
+      company_phone TEXT,
+      address TEXT,
+      city TEXT,
+      state TEXT,
+      postal_code TEXT,
+      country TEXT,
+      lead_source TEXT,
+      lead_status TEXT DEFAULT 'new' CHECK (lead_status IN ('new', 'contacted', 'qualified', 'unqualified', 'customer')),
+      data_quality_status TEXT DEFAULT 'needs_review' CHECK (data_quality_status IN ('good', 'needs_review', 'poor')),
+      notes TEXT,
+      tags TEXT,
+      custom_fields TEXT,
+      is_merged BOOLEAN DEFAULT FALSE,
+      merged_into_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+      FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (merged_into_id) REFERENCES contacts(id) ON DELETE SET NULL
+    )
+  `);
+
+  // Create contact_interactions table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS contact_interactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contact_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      interaction_type TEXT NOT NULL CHECK (interaction_type IN ('call', 'email', 'meeting', 'note', 'task')),
+      subject TEXT,
+      description TEXT,
+      interaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+      follow_up_date DATETIME,
+      status TEXT DEFAULT 'completed' CHECK (status IN ('completed', 'pending', 'cancelled')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Create indexes for better performance
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
+    CREATE INDEX IF NOT EXISTS idx_contacts_full_name ON contacts(full_name);
+    CREATE INDEX IF NOT EXISTS idx_contacts_company_id ON contacts(company_id);
+    CREATE INDEX IF NOT EXISTS idx_contacts_owner_id ON contacts(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_contacts_lead_status ON contacts(lead_status);
+    CREATE INDEX IF NOT EXISTS idx_companies_name ON companies(name);
+    CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
+    CREATE INDEX IF NOT EXISTS idx_interactions_contact_id ON contact_interactions(contact_id);
+    CREATE INDEX IF NOT EXISTS idx_interactions_date ON contact_interactions(interaction_date);
+  `);
+}
+
+// Test database connection
+export async function testConnection() {
+  try {
+    if (!db) {
+      await initializeDatabase();
+    }
+    await db.get('SELECT 1');
+    console.log('✅ Database connection test successful');
+    return true;
+  } catch (error) {
+    console.error('❌ Database connection test failed:', error.message);
+    return false;
+  }
+}
+
+// Get database instance
+export function getDatabase() {
+  return db;
+}
+
+// Initialize database on startup
+initializeDatabase();
+
+export default db;

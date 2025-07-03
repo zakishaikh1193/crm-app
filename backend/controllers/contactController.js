@@ -1,4 +1,4 @@
-import pool from '../config/database.js';
+import { getDatabase } from '../config/database.js';
 
 // Get all available fields for mapping
 export const getContactFields = async (req, res) => {
@@ -28,7 +28,8 @@ export const getContactFields = async (req, res) => {
     ];
 
     // Get custom fields from existing contacts
-    const [contacts] = await pool.execute(
+    const db = getDatabase();
+    const contacts = await db.all(
       'SELECT custom_fields FROM contacts WHERE custom_fields IS NOT NULL AND custom_fields != "" LIMIT 100'
     );
 
@@ -65,7 +66,7 @@ export const getContacts = async (req, res) => {
     const { page = 1, limit = 10, search = '', status = '' } = req.query;
     const offset = (page - 1) * limit;
 
-    let whereClause = 'WHERE is_merged = FALSE';
+    let whereClause = 'WHERE is_merged = 0';
     const params = [];
 
     if (search) {
@@ -84,19 +85,16 @@ export const getContacts = async (req, res) => {
       params.push(status);
     }
 
+    const db = getDatabase();
+
     // Get total count
-    const [countResult] = await pool.execute(
+    const countResult = await db.get(
       `SELECT COUNT(*) as total FROM contacts ${whereClause}`,
       params
     );
 
-    // Ensure limit and offset are always valid integers
-    const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 10;
-    const safeOffset = Number.isInteger(offset) && offset >= 0 ? offset : 0;
-    console.log('params:', params, 'limit:', safeLimit, 'offset:', safeOffset);
-
     // Get contacts with pagination
-    const [contacts] = await pool.execute(
+    const contacts = await db.all(
       `SELECT 
         c.*,
         comp.name as company_name_resolved,
@@ -107,8 +105,8 @@ export const getContacts = async (req, res) => {
       LEFT JOIN users u ON c.owner_id = u.id
       ${whereClause}
       ORDER BY c.created_at DESC
-      LIMIT ${safeLimit} OFFSET ${safeOffset}`,
-      params
+      LIMIT ? OFFSET ?`,
+      [...params, parseInt(limit), parseInt(offset)]
     );
 
     // Parse custom_fields for each contact
@@ -128,8 +126,8 @@ export const getContacts = async (req, res) => {
       pagination: {
         current_page: parseInt(page),
         per_page: parseInt(limit),
-        total: countResult[0].total,
-        total_pages: Math.ceil(countResult[0].total / limit)
+        total: countResult.total,
+        total_pages: Math.ceil(countResult.total / limit)
       }
     });
   } catch (error) {
@@ -142,8 +140,9 @@ export const getContacts = async (req, res) => {
 export const getContact = async (req, res) => {
   try {
     const { id } = req.params;
+    const db = getDatabase();
 
-    const [contacts] = await pool.execute(
+    const contact = await db.get(
       `SELECT 
         c.*,
         comp.name as company_name_resolved,
@@ -156,12 +155,10 @@ export const getContact = async (req, res) => {
       [id]
     );
 
-    if (contacts.length === 0) {
+    if (!contact) {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
-    const contact = contacts[0];
-    
     // Parse custom_fields JSON
     if (contact.custom_fields) {
       try {
@@ -220,7 +217,8 @@ export const createContact = async (req, res) => {
       ? JSON.stringify(customFields) 
       : null;
 
-    const [result] = await pool.execute(
+    const db = getDatabase();
+    const result = await db.run(
       `INSERT INTO contacts (
         company_id, owner_id, first_name, last_name, full_name, email, phone, mobile,
         job_title, department, company_name, company_email, company_phone,
@@ -255,7 +253,7 @@ export const createContact = async (req, res) => {
     );
 
     // Fetch created contact
-    const [contacts] = await pool.execute(
+    const contact = await db.get(
       `SELECT 
         c.*,
         comp.name as company_name_resolved,
@@ -265,10 +263,9 @@ export const createContact = async (req, res) => {
       LEFT JOIN companies comp ON c.company_id = comp.id
       LEFT JOIN users u ON c.owner_id = u.id
       WHERE c.id = ?`,
-      [result.insertId]
+      [result.lastID]
     );
 
-    const contact = contacts[0];
     if (contact.custom_fields) {
       try {
         contact.custom_fields = JSON.parse(contact.custom_fields);
@@ -316,19 +313,20 @@ export const updateContact = async (req, res) => {
       ...customFields
     } = req.body;
 
+    const db = getDatabase();
+
     // Check if contact exists and user has permission
-    const [existingContacts] = await pool.execute(
+    const existingContact = await db.get(
       'SELECT id, owner_id FROM contacts WHERE id = ?',
       [id]
     );
 
-    if (existingContacts.length === 0) {
+    if (!existingContact) {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
     // Check ownership (only allow update if user is owner or admin/manager)
-    const contact = existingContacts[0];
-    if (contact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
+    if (existingContact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Access denied. You can only edit your own contacts.' });
     }
 
@@ -343,13 +341,13 @@ export const updateContact = async (req, res) => {
       ? JSON.stringify(customFields) 
       : null;
 
-    await pool.execute(
+    await db.run(
       `UPDATE contacts SET 
         company_id = ?, first_name = ?, last_name = ?, full_name = ?, email = ?, 
         phone = ?, mobile = ?, job_title = ?, department = ?, company_name = ?, 
         company_email = ?, company_phone = ?, address = ?, city = ?, state = ?, 
         postal_code = ?, country = ?, lead_source = ?, lead_status = ?, 
-        notes = ?, tags = ?, custom_fields = ?
+        notes = ?, tags = ?, custom_fields = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`,
       [
         company_id || null,
@@ -379,7 +377,7 @@ export const updateContact = async (req, res) => {
     );
 
     // Fetch updated contact
-    const [contacts] = await pool.execute(
+    const contact = await db.get(
       `SELECT 
         c.*,
         comp.name as company_name_resolved,
@@ -392,18 +390,17 @@ export const updateContact = async (req, res) => {
       [id]
     );
 
-    const updatedContact = contacts[0];
-    if (updatedContact.custom_fields) {
+    if (contact.custom_fields) {
       try {
-        updatedContact.custom_fields = JSON.parse(updatedContact.custom_fields);
+        contact.custom_fields = JSON.parse(contact.custom_fields);
       } catch (e) {
-        updatedContact.custom_fields = {};
+        contact.custom_fields = {};
       }
     }
 
     res.json({
       message: 'Contact updated successfully',
-      contact: updatedContact
+      contact
     });
   } catch (error) {
     console.error('Update contact error:', error);
@@ -415,24 +412,24 @@ export const updateContact = async (req, res) => {
 export const deleteContact = async (req, res) => {
   try {
     const { id } = req.params;
+    const db = getDatabase();
 
     // Check if contact exists and user has permission
-    const [existingContacts] = await pool.execute(
+    const existingContact = await db.get(
       'SELECT id, owner_id FROM contacts WHERE id = ?',
       [id]
     );
 
-    if (existingContacts.length === 0) {
+    if (!existingContact) {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
     // Check ownership
-    const contact = existingContacts[0];
-    if (contact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
+    if (existingContact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Access denied. You can only delete your own contacts.' });
     }
 
-    await pool.execute('DELETE FROM contacts WHERE id = ?', [id]);
+    await db.run('DELETE FROM contacts WHERE id = ?', [id]);
 
     res.json({ message: 'Contact deleted successfully' });
   } catch (error) {
@@ -453,6 +450,7 @@ export const importContacts = async (req, res) => {
     const owner_id = req.user.id;
     let totalImported = 0;
     const errors = [];
+    const db = getDatabase();
 
     // Process each file
     for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
@@ -518,15 +516,16 @@ export const importContacts = async (req, res) => {
               companyQuery += 'email = ?';
               companyParams.push(contactData.company_email);
             }
-            const [companies] = await pool.execute(companyQuery, companyParams);
-            if (companies.length > 0) {
-              companyIdToUse = companies[0].id;
+            
+            const company = await db.get(companyQuery, companyParams);
+            if (company) {
+              companyIdToUse = company.id;
             } else {
               // Create new company
-              const [result] = await pool.execute(
+              const result = await db.run(
                 `INSERT INTO companies (
                   name, industry, website, phone, email, address, city, state, postal_code, country, custom_fields
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                   contactData.company_name || 'Unknown',
                   contactData.industry || null,
@@ -541,14 +540,14 @@ export const importContacts = async (req, res) => {
                   null // custom_fields
                 ]
               );
-              companyIdToUse = result.insertId;
+              companyIdToUse = result.lastID;
             }
           }
           contactData.company_id = companyIdToUse;
           // --- End company linking/creation logic ---
 
           // Insert contact
-          await pool.execute(
+          await db.run(
             `INSERT INTO contacts (
               company_id, owner_id, first_name, last_name, full_name, email, phone, mobile,
               job_title, department, company_name, company_email, company_phone,

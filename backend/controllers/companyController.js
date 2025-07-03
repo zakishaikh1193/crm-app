@@ -1,9 +1,10 @@
-import pool from '../config/database.js';
+import { getDatabase } from '../config/database.js';
 
 // Get all companies (for dropdowns)
 export const getCompanies = async (req, res) => {
   try {
-    const [companies] = await pool.execute(
+    const db = getDatabase();
+    const companies = await db.all(
       'SELECT id, name, industry, website, email, phone FROM companies ORDER BY name'
     );
 
@@ -18,18 +19,18 @@ export const getCompanies = async (req, res) => {
 export const getCompany = async (req, res) => {
   try {
     const { id } = req.params;
+    const db = getDatabase();
 
-    const [companies] = await pool.execute(
+    const company = await db.get(
       'SELECT * FROM companies WHERE id = ?',
       [id]
     );
 
-    if (companies.length === 0) {
+    if (!company) {
       return res.status(404).json({ error: 'Company not found' });
     }
 
     // Parse custom_fields JSON
-    const company = companies[0];
     if (company.custom_fields) {
       try {
         company.custom_fields = JSON.parse(company.custom_fields);
@@ -72,7 +73,8 @@ export const createCompany = async (req, res) => {
       ? JSON.stringify(customFields) 
       : null;
 
-    const [result] = await pool.execute(
+    const db = getDatabase();
+    const result = await db.run(
       `INSERT INTO companies (
         name, industry, website, phone, email, address, 
         city, state, postal_code, country, custom_fields
@@ -93,12 +95,11 @@ export const createCompany = async (req, res) => {
     );
 
     // Fetch created company
-    const [companies] = await pool.execute(
+    const company = await db.get(
       'SELECT * FROM companies WHERE id = ?',
-      [result.insertId]
+      [result.lastID]
     );
 
-    const company = companies[0];
     if (company.custom_fields) {
       try {
         company.custom_fields = JSON.parse(company.custom_fields);
@@ -135,13 +136,15 @@ export const updateCompany = async (req, res) => {
       ...customFields
     } = req.body;
 
+    const db = getDatabase();
+
     // Check if company exists
-    const [existingCompanies] = await pool.execute(
+    const existingCompany = await db.get(
       'SELECT id FROM companies WHERE id = ?',
       [id]
     );
 
-    if (existingCompanies.length === 0) {
+    if (!existingCompany) {
       return res.status(404).json({ error: 'Company not found' });
     }
 
@@ -150,11 +153,11 @@ export const updateCompany = async (req, res) => {
       ? JSON.stringify(customFields) 
       : null;
 
-    await pool.execute(
+    await db.run(
       `UPDATE companies SET 
         name = ?, industry = ?, website = ?, phone = ?, email = ?, 
         address = ?, city = ?, state = ?, postal_code = ?, country = ?, 
-        custom_fields = ?
+        custom_fields = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`,
       [
         name,
@@ -173,12 +176,11 @@ export const updateCompany = async (req, res) => {
     );
 
     // Fetch updated company
-    const [companies] = await pool.execute(
+    const company = await db.get(
       'SELECT * FROM companies WHERE id = ?',
       [id]
     );
 
-    const company = companies[0];
     if (company.custom_fields) {
       try {
         company.custom_fields = JSON.parse(company.custom_fields);
@@ -201,30 +203,31 @@ export const updateCompany = async (req, res) => {
 export const deleteCompany = async (req, res) => {
   try {
     const { id } = req.params;
+    const db = getDatabase();
 
     // Check if company exists
-    const [existingCompanies] = await pool.execute(
+    const existingCompany = await db.get(
       'SELECT id FROM companies WHERE id = ?',
       [id]
     );
 
-    if (existingCompanies.length === 0) {
+    if (!existingCompany) {
       return res.status(404).json({ error: 'Company not found' });
     }
 
     // Check if company has associated contacts
-    const [contacts] = await pool.execute(
+    const contactCount = await db.get(
       'SELECT COUNT(*) as count FROM contacts WHERE company_id = ?',
       [id]
     );
 
-    if (contacts[0].count > 0) {
+    if (contactCount.count > 0) {
       return res.status(400).json({ 
         error: 'Cannot delete company with associated contacts. Please remove or reassign contacts first.' 
       });
     }
 
-    await pool.execute('DELETE FROM companies WHERE id = ?', [id]);
+    await db.run('DELETE FROM companies WHERE id = ?', [id]);
 
     res.json({ message: 'Company deleted successfully' });
   } catch (error) {
