@@ -875,37 +875,32 @@ export const getDashboardStats = async (req, res) => {
 // Mark duplicates API
 export const markDuplicates = async (req, res) => {
   try {
-    // 1. Mark duplicates by email
-    const [emailDupes] = await pool.execute(`
-      SELECT e1.contact_id AS dupe_id, MIN(e2.contact_id) AS master_id
-      FROM emails e1
-      JOIN emails e2 ON e1.email = e2.email AND e1.contact_id != e2.contact_id
-      GROUP BY e1.contact_id
+    // 1. Mark duplicates by email (set-based, fast)
+    await pool.query(`
+      UPDATE contacts c
+      JOIN (
+        SELECT e1.contact_id AS dupe_id, MIN(e2.contact_id) AS master_id
+        FROM emails e1
+        JOIN emails e2 ON e1.email = e2.email AND e1.contact_id != e2.contact_id
+        GROUP BY e1.contact_id
+      ) dupes ON c.id = dupes.dupe_id
+      SET c.is_duplicate = 1, c.duplicate_of = dupes.master_id
+      WHERE (c.is_duplicate = 0 OR c.is_duplicate IS NULL)
     `);
-    let marked = 0;
-    for (const row of emailDupes) {
-      await pool.execute(
-        'UPDATE contacts SET is_duplicate = 1, duplicate_of = ? WHERE id = ? AND (is_duplicate = 0 OR is_duplicate IS NULL)',
-        [row.master_id, row.dupe_id]
-      );
-      marked++;
-    }
-    // 2. Mark duplicates by first+last+company (if not already marked)
-    const [nameDupes] = await pool.execute(`
-      SELECT c1.id AS dupe_id, MIN(c2.id) AS master_id
-      FROM contacts c1
-      JOIN contacts c2 ON c1.first_name = c2.first_name AND c1.last_name = c2.last_name AND c1.company_id = c2.company_id AND c1.id != c2.id
-      WHERE (c1.is_duplicate = 0 OR c1.is_duplicate IS NULL)
-      GROUP BY c1.id
+    // 2. Mark duplicates by first+last+company (set-based, fast)
+    await pool.query(`
+      UPDATE contacts c
+      JOIN (
+        SELECT c1.id AS dupe_id, MIN(c2.id) AS master_id
+        FROM contacts c1
+        JOIN contacts c2 ON c1.first_name = c2.first_name AND c1.last_name = c2.last_name AND c1.company_id = c2.company_id AND c1.id != c2.id
+        WHERE (c1.is_duplicate = 0 OR c1.is_duplicate IS NULL)
+        GROUP BY c1.id
+      ) dupes ON c.id = dupes.dupe_id
+      SET c.is_duplicate = 1, c.duplicate_of = dupes.master_id
+      WHERE (c.is_duplicate = 0 OR c.is_duplicate IS NULL)
     `);
-    for (const row of nameDupes) {
-      await pool.execute(
-        'UPDATE contacts SET is_duplicate = 1, duplicate_of = ? WHERE id = ? AND (is_duplicate = 0 OR is_duplicate IS NULL)',
-        [row.master_id, row.dupe_id]
-      );
-      marked++;
-    }
-    res.json({ message: `Duplicates marked: ${marked}` });
+    res.json({ message: `Duplicates marked (fast set-based update)` });
   } catch (error) {
     console.error('Error marking duplicates:', error);
     res.status(500).json({ error: 'Failed to mark duplicates', details: error.message });

@@ -143,6 +143,34 @@ export async function initializeDatabase() {
       )
     `);
 
+    // Ensure is_duplicate and duplicate_of columns exist (MySQL <8.0.29 compatible)
+    try {
+      await connection.query(`ALTER TABLE contacts ADD COLUMN is_duplicate TINYINT(1) DEFAULT 0`);
+    } catch (e) {
+      if (!e.message.includes('Duplicate column')) throw e;
+    }
+    try {
+      await connection.query(`ALTER TABLE contacts ADD COLUMN duplicate_of INT DEFAULT NULL`);
+    } catch (e) {
+      if (!e.message.includes('Duplicate column')) throw e;
+    }
+    // Add indexes for duplicate detection performance
+    try {
+      await connection.query(`CREATE INDEX idx_is_duplicate ON contacts (is_duplicate, duplicate_of)`);
+    } catch (e) {
+      if (!e.message.includes('Duplicate key name')) throw e;
+    }
+    try {
+      await connection.query(`CREATE INDEX idx_name_company ON contacts (first_name, last_name, company_id)`);
+    } catch (e) {
+      if (!e.message.includes('Duplicate key name')) throw e;
+    }
+    try {
+      await connection.query(`CREATE INDEX idx_email_contact ON emails (email, contact_id)`);
+    } catch (e) {
+      if (!e.message.includes('Duplicate key name')) throw e;
+    }
+
     // Create emails table
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS emails (
