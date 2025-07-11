@@ -7,7 +7,7 @@ const router = express.Router();
 // All import routes require authentication
 router.use(authenticateUserOrAdmin);
 
-router.post('/upload', upload.array('files', 10), uploadFiles);
+router.post('/upload', upload.any(), uploadFiles);
 router.get('/sample/:filename', getSampleData);
 
 export default router;

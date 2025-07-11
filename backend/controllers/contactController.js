@@ -795,7 +795,6 @@ export const importContacts = async (req, res) => {
     }
     let totalImported = 0;
     const errors = [];
-    const BATCH_SIZE = 500;
     const allRows = [];
     files.forEach((fileData, fileIndex) => {
       if (fileData && Array.isArray(fileData) && mappings[fileIndex]) {
@@ -804,11 +803,9 @@ export const importContacts = async (req, res) => {
         });
       }
     });
-    for (let i = 0; i < allRows.length; i += BATCH_SIZE) {
-      const batch = allRows.slice(i, i + BATCH_SIZE);
-      for (let j = 0; j < batch.length; j++) {
-        const { row, mapping, fileIndex } = batch[j];
-        try {
+    for (let i = 0; i < allRows.length; i++) {
+      const { row, mapping, fileIndex } = allRows[i];
+      try {
           const contactData = {};
           const customFields = {};
           const emails = [];
@@ -816,21 +813,45 @@ export const importContacts = async (req, res) => {
           let company_id = null;
           let department_id = null;
           let companyData = null;
+          // Extra email fields
+          const emailFieldMap = {
+            email_status: 'status',
+            email_source: 'source',
+            email_confidence: 'confidence',
+            email_catch_all_status: 'catch_all_status',
+            email_last_verified_at: 'last_verified_at',
+            secondary_email_source: 'source',
+            tertiary_email_source: 'source',
+            unsubscribe: 'unsubscribe',
+          };
           Object.entries(mapping).forEach(([fileColumn, crmField]) => {
             if (crmField && crmField !== '-- Ignore --' && row[fileColumn] !== undefined) {
               if (crmField.startsWith('custom_fields.')) {
                 const customFieldName = crmField.replace('custom_fields.', '');
                 customFields[customFieldName] = row[fileColumn];
-              } else if (crmField === 'email' || crmField === 'secondary_email' || crmField === 'tertiary_email') {
-                emails.push({ email: row[fileColumn], type: crmField === 'email' ? 'primary' : crmField.replace('_email', '') });
+              } else if (crmField === 'email' || crmField === 'secondary_email' || crmField === 'tertiary_email' || crmField === 'personal_email') {
+                // Gather all possible email fields for this type
+                const emailObj = { email: row[fileColumn], type: crmField === 'email' ? 'primary' : crmField.replace('_email', '') };
+                // Attach extra fields if present in mapping
+                Object.entries(emailFieldMap).forEach(([mapKey, dbKey]) => {
+                  if (mapping[mapKey] && row[mapping[mapKey]] !== undefined && row[mapping[mapKey]] !== '') {
+                    emailObj[dbKey] = row[mapping[mapKey]];
+                  }
+                });
+                emails.push(emailObj);
               } else if (crmField.endsWith('_phone')) {
-                phones.push({ phone: row[fileColumn], type: crmField.replace('_phone', '') });
+                // Only add to phones if NOT company_phone
+                if (crmField !== 'company_phone') {
+                  phones.push({ phone: row[fileColumn], type: crmField.replace('_phone', '') });
+                } else {
+                  // company_phone goes to companyData
+                  if (!companyData) companyData = {};
+                  companyData['phone'] = row[fileColumn];
+                }
               } else if (crmField === 'company_name') {
                 contactData.company_name = row[fileColumn];
               } else if (crmField === 'department') {
                 contactData.department = row[fileColumn];
-              } else if (crmField === 'personal_email') {
-                emails.push({ email: row[fileColumn], type: 'personal' });
               } else if (crmField === 'contact_address') { contactData.address = row[fileColumn]; }
               else if (crmField === 'contact_city') { contactData.city = row[fileColumn]; }
               else if (crmField === 'contact_state') { contactData.state = row[fileColumn]; }
@@ -853,18 +874,40 @@ export const importContacts = async (req, res) => {
           phones.forEach(p => { p.phone = normalizeEmpty(p.phone); });
           // Look up or create company
           if (contactData.company_name) {
+            // Build all possible company fields
+            const allCompanyFields = [
+              'name','website','linkedin_url','facebook_url','twitter_url','industry','num_employees','annual_revenue','total_funding','latest_funding','latest_funding_amount','last_raised_at','address','city','state','country','phone','seo_description','keywords','subsidiary_of','custom_fields'
+            ];
+            // If company exists, update it
             const [companies] = await pool.execute('SELECT id FROM companies WHERE name = ?', [contactData.company_name]);
             if (companies.length > 0) {
               company_id = companies[0].id;
+              if (companyData && Object.keys(companyData).length > 0) {
+                // Only update fields that are present in companyData
+                const updateFields = [];
+                const updateValues = [];
+                for (const key of allCompanyFields) {
+                  if (key in companyData && companyData[key] !== undefined) {
+                    updateFields.push(`${key} = ?`);
+                    updateValues.push(companyData[key]);
+                  }
+                }
+                if (updateFields.length > 0) {
+                  await pool.execute(
+                    `UPDATE companies SET ${updateFields.join(', ')} WHERE id = ?`,
+                    [...updateValues, company_id]
+                  );
+                }
+              }
             } else {
               // Prepare company insert fields
               const fields = ['name'];
               const values = [contactData.company_name];
               if (companyData) {
-                for (const [key, value] of Object.entries(companyData)) {
-                  if (value !== undefined && value !== null) {
+                for (const key of allCompanyFields) {
+                  if (key in companyData && companyData[key] !== undefined) {
                     fields.push(key);
-                    values.push(value);
+                    values.push(companyData[key]);
                   }
                 }
               }
@@ -917,16 +960,23 @@ export const importContacts = async (req, res) => {
           // Insert emails
           for (const emailObj of emails) {
             await pool.execute(
-              `INSERT INTO emails (contact_id, email, type)
-               VALUES (?, ?, ?)` ,
+              `INSERT INTO emails (contact_id, email, type, status, source, confidence, catch_all_status, last_verified_at, is_primary, unsubscribe)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
               [
                 contactId,
                 emailObj.email,
-                emailObj.type || 'primary'
+                emailObj.type || 'primary',
+                emailObj.status || null,
+                emailObj.source || null,
+                emailObj.confidence || null,
+                emailObj.catch_all_status || null,
+                emailObj.last_verified_at || null,
+                emailObj.is_primary || false,
+                emailObj.unsubscribe || false
               ]
             );
           }
-          // Insert phones
+          // Insert phones (company_phone is NOT included)
           for (const phoneObj of phones) {
             await pool.execute(
               `INSERT INTO phones (contact_id, phone, type)
@@ -940,9 +990,8 @@ export const importContacts = async (req, res) => {
           }
           totalImported++;
         } catch (error) {
-          errors.push(`File ${fileIndex + 1}, Row ${j + 1 + i}: ${error.message}`);
+          errors.push(`File ${fileIndex + 1}, Row ${i + 1}: ${error.message}`);
         }
-      }
     }
     res.json({
       message: 'Import completed',
