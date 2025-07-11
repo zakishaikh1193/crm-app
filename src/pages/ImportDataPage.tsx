@@ -476,6 +476,16 @@ const ImportDataPage: React.FC = () => {
                               Ignore All
                             </Button>
                           </Tooltip>
+                          <Tooltip title="Apply this mapping to all files with matching headers">
+                            <Button
+                              size="small"
+                              startIcon={<Settings />}
+                              onClick={() => handleApplyMappingToAll(fileIndex)}
+                              sx={{ color: '#6366f1' }}
+                            >
+                              Apply to All
+                            </Button>
+                          </Tooltip>
                         </Box>
                       </Box>
 

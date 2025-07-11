@@ -23,6 +23,7 @@ import {
   useTheme,
   useMediaQuery,
   Chip,
+  Pagination,
 } from '@mui/material';
 import {
   Add,
@@ -59,16 +60,29 @@ const CompanyListPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCompanies, setTotalCompanies] = useState(0);
+  const itemsPerPage = 20;
 
   useEffect(() => {
     fetchCompanies();
-  }, []);
+  }, [currentPage, searchTerm]);
 
   const fetchCompanies = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/companies');
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: itemsPerPage.toString(),
+      });
+      if (searchTerm) {
+        params.append('search', searchTerm);
+      }
+      const response = await api.get(`/companies?${params.toString()}`);
       setCompanies(response.data.companies);
+      setTotalPages(response.data.pagination.total_pages);
+      setTotalCompanies(response.data.pagination.total);
       setError('');
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to fetch companies');
@@ -136,7 +150,7 @@ const CompanyListPage: React.FC = () => {
                 fontWeight: 500,
               }}
             >
-              Manage your business companies ({companies.length} total)
+              Manage your business companies ({totalCompanies} total)
             </Typography>
           </Box>
           <Button
@@ -414,6 +428,17 @@ const CompanyListPage: React.FC = () => {
           )}
         </Card>
       </Grow>
+      {/* Pagination Controls */}
+      <Box display="flex" justifyContent="center" mt={3}>
+        <Pagination
+          count={totalPages}
+          page={currentPage}
+          onChange={(_, value) => setCurrentPage(value)}
+          color="primary"
+          shape="rounded"
+          size="large"
+        />
+      </Box>
     </Box>
   );
 };
