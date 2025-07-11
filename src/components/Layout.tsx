@@ -22,6 +22,7 @@ import {
   Tooltip,
   Fade,
   Slide,
+  Button,
 } from '@mui/material';
 import {
   Menu as MenuIcon,
@@ -29,12 +30,14 @@ import {
   People,
   Business,
   Upload,
+  Download, // <-- add Download icon for Export Data
   AccountCircle,
   Logout,
   Notifications,
   Settings,
   Build,
   Email,
+  Delete as DeleteIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -89,8 +92,14 @@ const Layout: React.FC = () => {
     },
     { 
       text: 'Import Data', 
-      icon: <Upload />, 
+      icon: <Download />, 
       path: '/import',
+      badge: null
+    },
+    {
+      text: 'Export Data',
+      icon: <Upload />, // <-- use Download icon
+      path: '/export',
       badge: null
     },
     {
@@ -103,6 +112,12 @@ const Layout: React.FC = () => {
       text: 'Missing Emails',
       icon: <Email />, // Email icon for missing emails
       path: '/missing-emails',
+      badge: null
+    },
+    {
+      text: 'Merged Duplicates',
+      icon: <DeleteIcon />, // Delete icon for merged duplicates
+      path: '/merged-duplicates',
       badge: null
     },
   ];

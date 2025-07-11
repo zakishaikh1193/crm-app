@@ -13,7 +13,10 @@ import {
   mergeContacts,
   predictEmail,
   savePredictedEmail,
-  getContactsMissingEmails
+  getContactsMissingEmails,
+  deleteMergedDuplicates,
+  getMergedDuplicates,
+  getContactFilterOptions
 } from '../controllers/contactController.js';
 import { authenticateUserOrAdmin } from '../middlewares/auth.js';
 
@@ -28,6 +31,8 @@ router.post('/import', importContacts);
 router.get('/dashboard-stats', getDashboardStats);
 router.get('/duplicates', getDuplicateGroups);
 router.get('/missing-emails', getContactsMissingEmails);
+router.get('/merged-duplicates', getMergedDuplicates);
+router.get('/filter-options', getContactFilterOptions);
 router.get('/predict-email/:id', predictEmail);
 router.post('/:id/save-predicted-email', savePredictedEmail);
 router.get('/:id', getContact);
@@ -36,5 +41,6 @@ router.put('/:id', updateContact);
 router.delete('/:id', deleteContact);
 router.post('/mark-duplicates', markDuplicates);
 router.post('/merge', mergeContacts);
+router.post('/delete-duplicates', deleteMergedDuplicates);
 
 export default router;

@@ -72,7 +72,7 @@ export const getContactFields = async (req, res) => {
   }
 };
 
-// Get all contacts
+// Enhance getContacts to support advanced filtering
 export const getContacts = async (req, res) => {
   try {
     // Pagination params
@@ -80,76 +80,124 @@ export const getContacts = async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 20;
     const offset = (page - 1) * limit;
 
-    // Get total count for pagination
-    const [[{ total }]] = await pool.execute('SELECT COUNT(*) as total FROM contacts');
+    const {
+      company,
+      industry,
+      department,
+      city,
+      state,
+      country,
+      title,
+      seniority,
+      stage,
+      owner,
+      has_email,
+      has_phone,
+      // Add more filters as needed
+    } = req.query;
 
-    const contactsQuery = `
-        SELECT
-     c.id AS contact_id,
-     c.first_name,
-     c.last_name,
-     c.title,
-     c.seniority,
-     c.stage,
-     c.lists,
-     c.last_contacted,
-     c.person_linkedin_url,
-     c.contact_owner,
-     c.address,
-     c.city,
-     c.state,
-     c.country,
-     c.postal_code,
-     c.custom_fields,
-     c.created_at AS contact_created_at,
-     c.updated_at AS contact_updated_at,
-     comp.id AS company_id,
-     comp.name AS company_name,
-     comp.website AS company_website,
-     comp.linkedin_url AS company_linkedin_url,
-     comp.facebook_url AS company_facebook_url,
-     comp.twitter_url AS company_twitter_url,
-     comp.industry AS company_industry,
-     comp.num_employees AS company_num_employees,
-     comp.annual_revenue AS company_annual_revenue,
-     comp.total_funding AS company_total_funding,
-     comp.latest_funding AS company_latest_funding,
-     comp.latest_funding_amount AS company_latest_funding_amount,
-     comp.address AS company_address,
-     comp.city AS company_city,
-     comp.state AS company_state,
-     comp.country AS company_country,
-     comp.phone AS company_phone,
-     d.id AS department_id,
-     d.name AS department_name,
-     u.id AS owner_id,
-     u.first_name AS owner_first_name,
-     u.last_name AS owner_last_name,
-     u.email AS owner_email,
-     u.role AS owner_role
-   FROM contacts c
-   LEFT JOIN companies comp ON c.company_id = comp.id
-   LEFT JOIN departments d ON c.department_id = d.id
-   LEFT JOIN users u ON c.owner_id = u.id
-   ORDER BY c.created_at DESC
-   LIMIT ${Number(limit)} OFFSET ${Number(offset)}
-    `;
-    let contactsResult;
-    try {
-      contactsResult = await pool.execute(contactsQuery);
-      if (!contactsResult || !Array.isArray(contactsResult) || contactsResult.length < 1) {
-        throw new Error('contactsResult is invalid');
+    // Build WHERE clause and params
+    let whereClause = ' WHERE 1=1';
+    const params = [];
+    // Helper to add multi-select filters (now splits by pipe |)
+    const addMultiSelect = (field, values, tableAlias = 'c') => {
+      if (!values) return;
+      // Use pipe as delimiter for multi-select
+      const arr = values.split('|').map(v => v.trim()).filter(Boolean);
+      if (arr.length > 0) {
+        whereClause += ` AND (` + arr.map(() => `${tableAlias}.${field} = ?`).join(' OR ') + `)`;
+        params.push(...arr);
       }
-    } catch (err) {
-      console.error('Error executing contacts query:', err);
-      return res.status(500).json({ error: 'Contacts query execution failed', details: err.message, full: err });
+    };
+    addMultiSelect('company_id', company, 'c');
+    addMultiSelect('industry', industry, 'co');
+    addMultiSelect('department_id', department, 'c');
+    addMultiSelect('city', city, 'c');
+    addMultiSelect('state', state, 'c');
+    addMultiSelect('country', country, 'c');
+    addMultiSelect('title', title, 'c');
+    addMultiSelect('seniority', seniority, 'c');
+    addMultiSelect('stage', stage, 'c');
+    addMultiSelect('owner_id', owner, 'c');
+    if (has_email === '1') {
+      whereClause += ' AND EXISTS (SELECT 1 FROM emails e WHERE e.contact_id = c.id AND e.email IS NOT NULL AND TRIM(e.email) <> \'\')';
+    } else if (has_email === '0') {
+      whereClause += ' AND NOT EXISTS (SELECT 1 FROM emails e WHERE e.contact_id = c.id AND e.email IS NOT NULL AND TRIM(e.email) <> \'\')';
     }
-    const [rows] = contactsResult;
+    if (has_phone === '1') {
+      whereClause += ' AND EXISTS (SELECT 1 FROM phones p WHERE p.contact_id = c.id AND p.phone IS NOT NULL AND TRIM(p.phone) <> \'\')';
+    } else if (has_phone === '0') {
+      whereClause += ' AND NOT EXISTS (SELECT 1 FROM phones p WHERE p.contact_id = c.id AND p.phone IS NOT NULL AND TRIM(p.phone) <> \'\')';
+    }
+
+    // Get total count for pagination
+    const countSql = `SELECT COUNT(*) as total FROM contacts c LEFT JOIN companies co ON c.company_id = co.id LEFT JOIN departments d ON c.department_id = d.id LEFT JOIN users u ON c.owner_id = u.id${whereClause}`;
+    const [[{ total }]] = await pool.execute(countSql, params);
+
+    // Main query
+    let sql = `SELECT
+      c.id AS contact_id,
+      c.first_name,
+      c.last_name,
+      c.title,
+      c.seniority,
+      c.stage,
+      c.lists,
+      c.last_contacted,
+      c.person_linkedin_url,
+      c.contact_owner,
+      c.address,
+      c.city,
+      c.state,
+      c.country,
+      c.postal_code,
+      c.custom_fields,
+      c.created_at AS contact_created_at,
+      c.updated_at AS contact_updated_at,
+      c.is_duplicate,
+      c.duplicate_of,
+      co.id AS company_id,
+      co.name AS company_name,
+      co.website AS company_website,
+      co.linkedin_url AS company_linkedin_url,
+      co.facebook_url AS company_facebook_url,
+      co.twitter_url AS company_twitter_url,
+      co.industry AS company_industry,
+      co.num_employees AS company_num_employees,
+      co.annual_revenue AS company_annual_revenue,
+      co.total_funding AS company_total_funding,
+      co.latest_funding AS company_latest_funding,
+      co.latest_funding_amount AS company_latest_funding_amount,
+      co.last_raised_at AS company_last_raised_at,
+      co.address AS company_address,
+      co.city AS company_city,
+      co.state AS company_state,
+      co.country AS company_country,
+      co.phone AS company_phone,
+      co.seo_description AS company_seo_description,
+      co.keywords AS company_keywords,
+      co.subsidiary_of AS company_subsidiary_of,
+      co.custom_fields AS company_custom_fields,
+      co.created_at AS company_created_at,
+      co.updated_at AS company_updated_at,
+      d.id AS department_id,
+      d.name AS department_name,
+      u.id AS owner_id,
+      u.first_name AS owner_first_name,
+      u.last_name AS owner_last_name,
+      u.email AS owner_email,
+      u.role AS owner_role
+    FROM contacts c
+    LEFT JOIN companies co ON c.company_id = co.id
+    LEFT JOIN departments d ON c.department_id = d.id
+    LEFT JOIN users u ON c.owner_id = u.id
+    ${whereClause}
+    ORDER BY c.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+    const [rows] = await pool.execute(sql, params);
     if (!rows || !Array.isArray(rows)) {
-      console.error('contacts is invalid:', rows);
-      return res.status(500).json({ error: 'Contacts result invalid', raw: rows });
+      return res.json({ contacts: [], pagination: { total: 0, total_pages: 0, current_page: page, per_page: limit } });
     }
-    // 2. Fetch all emails and phones for these contacts
+    // Fetch emails and phones for these contacts
     const contactIds = rows.map(row => row.contact_id);
     let emailsRows = [], phonesRows = [];
     if (contactIds.length > 0) {
@@ -402,6 +450,12 @@ export const getContact = async (req, res) => {
   }
 };
 
+// Helper to normalize empty strings to null
+function normalizeEmpty(val) {
+  if (typeof val === 'string' && val.trim() === '') return null;
+  return val;
+}
+
 // Create contact
 export const createContact = async (req, res) => {
   try {
@@ -427,6 +481,28 @@ export const createContact = async (req, res) => {
       phones = [],
       ...customFields
     } = req.body;
+
+    // Normalize all fields
+    first_name = normalizeEmpty(first_name);
+    last_name = normalizeEmpty(last_name);
+    title = normalizeEmpty(title);
+    seniority = normalizeEmpty(seniority);
+    department = normalizeEmpty(department);
+    company_name = normalizeEmpty(company_name);
+    owner_id = normalizeEmpty(owner_id);
+    stage = normalizeEmpty(stage);
+    lists = normalizeEmpty(lists);
+    last_contacted = normalizeEmpty(last_contacted);
+    person_linkedin_url = normalizeEmpty(person_linkedin_url);
+    contact_owner = normalizeEmpty(contact_owner);
+    address = normalizeEmpty(address);
+    city = normalizeEmpty(city);
+    state = normalizeEmpty(state);
+    country = normalizeEmpty(country);
+    postal_code = normalizeEmpty(postal_code);
+    Object.keys(customFields).forEach(k => { customFields[k] = normalizeEmpty(customFields[k]); });
+    emails = Array.isArray(emails) ? emails.map(e => ({ ...e, email: normalizeEmpty(e.email) })) : [];
+    phones = Array.isArray(phones) ? phones.map(p => ({ ...p, phone: normalizeEmpty(p.phone) })) : [];
 
     // Look up or create company
     let company_id = null;
@@ -558,6 +634,34 @@ export const updateContact = async (req, res) => {
       ...customFields
     } = req.body;
 
+    // Normalize all fields
+    const norm = v => normalizeEmpty(v);
+    const normObj = obj => {
+      const o = {};
+      Object.keys(obj).forEach(k => { o[k] = norm(obj[k]); });
+      return o;
+    };
+    const upd_first_name = norm(first_name);
+    const upd_last_name = norm(last_name);
+    const upd_full_name = norm(full_name);
+    const upd_email = norm(email);
+    const upd_phone = norm(phone);
+    const upd_mobile = norm(mobile);
+    const upd_job_title = norm(job_title);
+    const upd_department = norm(department);
+    const upd_company_name = norm(company_name);
+    const upd_company_phone = norm(company_phone);
+    const upd_address = norm(address);
+    const upd_city = norm(city);
+    const upd_state = norm(state);
+    const upd_postal_code = norm(postal_code);
+    const upd_country = norm(country);
+    const upd_lead_source = norm(lead_source);
+    const upd_lead_status = norm(lead_status);
+    const upd_notes = norm(notes);
+    const upd_tags = norm(tags);
+    const upd_customFields = normObj(customFields);
+
     // Check if contact exists and user has permission
     const [existingContacts] = await pool.execute(
       'SELECT id, owner_id FROM contacts WHERE id = ?',
@@ -581,8 +685,8 @@ export const updateContact = async (req, res) => {
     }
 
     // Prepare custom_fields JSON
-    const customFieldsJson = Object.keys(customFields).length > 0 
-      ? JSON.stringify(customFields) 
+    const customFieldsJson = Object.keys(upd_customFields).length > 0 
+      ? JSON.stringify(upd_customFields) 
       : null;
 
     await pool.execute(
@@ -595,25 +699,25 @@ export const updateContact = async (req, res) => {
       WHERE id = ?`,
       [
         company_id || null,
-        first_name || null,
-        last_name || null,
+        upd_first_name,
+        upd_last_name,
         finalFullName || null,
-        email || null,
-        phone || null,
-        mobile || null,
-        job_title || null,
-        department || null,
-        company_name || null,
-        company_phone || null,
-        address || null,
-        city || null,
-        state || null,
-        postal_code || null,
-        country || null,
-        lead_source || null,
-        lead_status || null,
-        notes || null,
-        tags || null,
+        upd_email,
+        upd_phone,
+        upd_mobile,
+        upd_job_title,
+        upd_department,
+        upd_company_name,
+        upd_company_phone,
+        upd_address,
+        upd_city,
+        upd_state,
+        upd_postal_code,
+        upd_country,
+        upd_lead_source,
+        upd_lead_status,
+        upd_notes,
+        upd_tags,
         customFieldsJson,
         id
       ]
@@ -740,6 +844,13 @@ export const importContacts = async (req, res) => {
               }
             }
           });
+          // Normalize all fields in contactData, companyData, customFields
+          Object.keys(contactData).forEach(k => { contactData[k] = normalizeEmpty(contactData[k]); });
+          if (companyData) Object.keys(companyData).forEach(k => { companyData[k] = normalizeEmpty(companyData[k]); });
+          Object.keys(customFields).forEach(k => { customFields[k] = normalizeEmpty(customFields[k]); });
+          // Normalize emails/phones
+          emails.forEach(e => { e.email = normalizeEmpty(e.email); });
+          phones.forEach(p => { p.phone = normalizeEmpty(p.phone); });
           // Look up or create company
           if (contactData.company_name) {
             const [companies] = await pool.execute('SELECT id FROM companies WHERE name = ?', [contactData.company_name]);
@@ -1332,5 +1443,70 @@ export const getContactsMissingEmails = async (req, res) => {
   } catch (err) {
     console.error('Error fetching contacts missing emails:', err);
     res.status(500).json({ error: 'Failed to fetch contacts missing emails' });
+  }
+};
+
+// Delete all contacts where is_duplicate = 2 (merged contacts)
+export const deleteMergedDuplicates = async (req, res) => {
+  try {
+    const [result] = await pool.execute('DELETE FROM contacts WHERE is_duplicate = 2');
+    res.json({ message: 'Deleted merged duplicate contacts', deleted: result.affectedRows });
+  } catch (err) {
+    console.error('Error deleting merged duplicates:', err);
+    res.status(500).json({ error: 'Failed to delete merged duplicates' });
+  }
+};
+
+// Get all contacts where is_duplicate = 2 (merged contacts)
+export const getMergedDuplicates = async (req, res) => {
+  try {
+    const [contacts] = await pool.execute(`
+      SELECT c.id, c.first_name, c.last_name, c.company_id, co.name as company_name, c.duplicate_of, c.updated_at
+      FROM contacts c
+      LEFT JOIN companies co ON c.company_id = co.id
+      WHERE c.is_duplicate = 2
+      ORDER BY c.updated_at DESC
+    `);
+    res.json({ contacts });
+  } catch (err) {
+    console.error('Error fetching merged duplicates:', err);
+    res.status(500).json({ error: 'Failed to fetch merged duplicates' });
+  }
+};
+
+// Get all filter options for contacts sidebar
+export const getContactFilterOptions = async (req, res) => {
+  try {
+    // Companies (id, name)
+    const [companies] = await pool.execute('SELECT id, name FROM companies ORDER BY name');
+    // Industries (distinct, non-empty)
+    const [industriesRows] = await pool.execute('SELECT DISTINCT industry FROM companies WHERE industry IS NOT NULL AND TRIM(industry) <> "" ORDER BY industry');
+    const industries = industriesRows.map(r => r.industry).filter(Boolean);
+    // Departments (id, name)
+    const [departments] = await pool.execute('SELECT id, name FROM departments ORDER BY name');
+    // Owners (id, first_name, last_name)
+    const [owners] = await pool.execute('SELECT id, first_name, last_name FROM users WHERE is_active = 1 ORDER BY first_name, last_name');
+    // Cities (distinct, non-empty)
+    const [citiesRows] = await pool.execute('SELECT DISTINCT city FROM contacts WHERE city IS NOT NULL AND TRIM(city) <> "" ORDER BY city');
+    const cities = citiesRows.map(r => r.city).filter(Boolean);
+    // States (distinct, non-empty)
+    const [statesRows] = await pool.execute('SELECT DISTINCT state FROM contacts WHERE state IS NOT NULL AND TRIM(state) <> "" ORDER BY state');
+    const states = statesRows.map(r => r.state).filter(Boolean);
+    // Countries (distinct, non-empty)
+    const [countriesRows] = await pool.execute('SELECT DISTINCT country FROM contacts WHERE country IS NOT NULL AND TRIM(country) <> "" ORDER BY country');
+    const countries = countriesRows.map(r => r.country).filter(Boolean);
+    // Stages (distinct, non-empty)
+    const [stagesRows] = await pool.execute('SELECT DISTINCT stage FROM contacts WHERE stage IS NOT NULL AND TRIM(stage) <> "" ORDER BY stage');
+    const stages = stagesRows.map(r => r.stage).filter(Boolean);
+    // Titles (distinct, non-empty)
+    const [titlesRows] = await pool.execute('SELECT DISTINCT title FROM contacts WHERE title IS NOT NULL AND TRIM(title) <> "" ORDER BY title');
+    const titles = titlesRows.map(r => r.title).filter(Boolean);
+    // Seniorities (distinct, non-empty)
+    const [seniorityRows] = await pool.execute('SELECT DISTINCT seniority FROM contacts WHERE seniority IS NOT NULL AND TRIM(seniority) <> "" ORDER BY seniority');
+    const seniorities = seniorityRows.map(r => r.seniority).filter(Boolean);
+    res.json({ companies, industries, departments, owners, cities, states, countries, stages, titles, seniorities });
+  } catch (error) {
+    console.error('Get contact filter options error:', error);
+    res.status(500).json({ error: 'Failed to fetch filter options' });
   }
 };
