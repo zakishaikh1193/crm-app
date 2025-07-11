@@ -12,7 +12,7 @@ import {
   CircularProgress,
   Alert,
 } from '@mui/material';
-import { Edit, ArrowBack, Delete } from '@mui/icons-material';
+import { Edit, ArrowBack, Delete, Email } from '@mui/icons-material';
 import api from '../config/axiosConfig';
 
 interface Contact {
@@ -40,6 +40,7 @@ interface Contact {
   state?: string;
   country?: string;
   address?: string;
+  last_contacted?: string;
 }
 
 const ContactDetailPage: React.FC = () => {
@@ -96,9 +97,11 @@ const ContactDetailPage: React.FC = () => {
     }
   };
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString();
-  };
+  function formatDateSafe(dateString?: string) {
+    if (!dateString || dateString === '0000-00-00' || dateString === '0') return 'N/A';
+    const d = new Date(dateString);
+    return isNaN(d.getTime()) ? 'N/A' : d.toLocaleDateString();
+  }
 
   if (loading) {
     return (
@@ -183,6 +186,14 @@ const ContactDetailPage: React.FC = () => {
             onClick={handleDelete}
           >
             Delete
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            startIcon={<Email />}
+            onClick={() => navigate(`/email-finder/${contact.id}`)}
+          >
+            Find Email
           </Button>
         </Box>
       </Box>
@@ -345,7 +356,23 @@ const ContactDetailPage: React.FC = () => {
                     Created
                   </Typography>
                   <Typography variant="body1">
-                    {formatDate(contact.created_at)}
+                    {formatDateSafe(contact.created_at)}
+                  </Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="body2" color="text.secondary">
+                    Updated
+                  </Typography>
+                  <Typography variant="body1">
+                    {formatDateSafe(contact.updated_at)}
+                  </Typography>
+                </Grid>
+                <Grid item xs={4}>
+                  <Typography variant="body2" color="text.secondary">
+                    Last Contacted
+                  </Typography>
+                  <Typography variant="body1">
+                    {formatDateSafe(contact.last_contacted)}
                   </Typography>
                 </Grid>
               </Grid>

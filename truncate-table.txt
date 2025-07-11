@@ -1,0 +1,6 @@
+TRUNCATE TABLE companies;
+TRUNCATE TABLE contacts;
+TRUNCATE TABLE company_locations;
+TRUNCATE TABLE departments;
+TRUNCATE TABLE emails;
+TRUNCATE TABLE phones;

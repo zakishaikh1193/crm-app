@@ -34,6 +34,7 @@ import {
   Notifications,
   Settings,
   Build,
+  Email,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -96,6 +97,12 @@ const Layout: React.FC = () => {
       text: 'Data Utility',
       icon: <Build />,
       path: '/data-utility',
+      badge: null
+    },
+    {
+      text: 'Missing Emails',
+      icon: <Email />, // Email icon for missing emails
+      path: '/missing-emails',
       badge: null
     },
   ];

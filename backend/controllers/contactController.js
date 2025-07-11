@@ -136,9 +136,7 @@ export const getContacts = async (req, res) => {
     `;
     let contactsResult;
     try {
-      console.log('contactsQuery:', contactsQuery);
       contactsResult = await pool.execute(contactsQuery);
-      console.log('contactsResult:', contactsResult);
       if (!contactsResult || !Array.isArray(contactsResult) || contactsResult.length < 1) {
         throw new Error('contactsResult is invalid');
       }
@@ -327,68 +325,75 @@ export const getContact = async (req, res) => {
     // 2. Fetch emails and phones for this contact
     const [emails] = await pool.execute('SELECT * FROM emails WHERE contact_id = ?', [id]);
     const [phones] = await pool.execute('SELECT * FROM phones WHERE contact_id = ?', [id]);
-    // 3. Map to contact object (same as getContacts)
+    // 3. Map to contact object (same as getContacts), normalize nulls/empties
     let contactCustomFields = row.custom_fields;
     if (contactCustomFields && typeof contactCustomFields === 'string') {
       try { contactCustomFields = JSON.parse(contactCustomFields); } catch { contactCustomFields = {}; }
     }
+    if (!contactCustomFields || typeof contactCustomFields !== 'object') contactCustomFields = {};
     let companyCustomFields = row.company_custom_fields;
     if (companyCustomFields && typeof companyCustomFields === 'string') {
       try { companyCustomFields = JSON.parse(companyCustomFields); } catch { companyCustomFields = {}; }
     }
+    if (!companyCustomFields || typeof companyCustomFields !== 'object') companyCustomFields = {};
+    function safe(val, fallback = '') {
+      if (val === null || val === undefined) return fallback;
+      if (typeof val === 'string' && (val.trim() === '' || val === '0000-00-00' || val === '0' || val === '{}')) return fallback;
+      return val;
+    }
     const contact = {
       id: row.contact_id,
-      first_name: row.first_name,
-      last_name: row.last_name,
-      title: row.title,
-      seniority: row.seniority,
-      stage: row.stage,
-      lists: row.lists,
-      last_contacted: row.last_contacted,
-      person_linkedin_url: row.person_linkedin_url,
-      contact_owner: row.contact_owner,
-      address: row.address,
-      city: row.city,
-      state: row.state,
-      country: row.country,
-      postal_code: row.postal_code,
+      first_name: safe(row.first_name),
+      last_name: safe(row.last_name),
+      title: safe(row.title),
+      seniority: safe(row.seniority),
+      stage: safe(row.stage),
+      lists: safe(row.lists),
+      last_contacted: safe(row.last_contacted),
+      person_linkedin_url: safe(row.person_linkedin_url),
+      contact_owner: safe(row.contact_owner),
+      address: safe(row.address),
+      city: safe(row.city),
+      state: safe(row.state),
+      country: safe(row.country),
+      postal_code: safe(row.postal_code),
       custom_fields: contactCustomFields,
-      created_at: row.contact_created_at,
-      updated_at: row.contact_updated_at,
+      created_at: safe(row.contact_created_at),
+      updated_at: safe(row.contact_updated_at),
       company: row.company_id ? {
         id: row.company_id,
-        name: row.company_name,
-        website: row.company_website,
-        linkedin_url: row.company_linkedin_url,
-        facebook_url: row.company_facebook_url,
-        twitter_url: row.company_twitter_url,
-        industry: row.company_industry,
-        num_employees: row.company_num_employees,
-        annual_revenue: row.company_annual_revenue,
-        total_funding: row.company_total_funding,
-        latest_funding: row.company_latest_funding,
-        latest_funding_amount: row.company_latest_funding_amount,
-        address: row.company_address,
-        city: row.company_city,
-        state: row.company_state,
-        country: row.company_country,
-        phone: row.company_phone,
+        name: safe(row.company_name),
+        website: safe(row.company_website),
+        linkedin_url: safe(row.company_linkedin_url),
+        facebook_url: safe(row.company_facebook_url),
+        twitter_url: safe(row.company_twitter_url),
+        industry: safe(row.company_industry),
+        num_employees: safe(row.company_num_employees),
+        annual_revenue: safe(row.company_annual_revenue),
+        total_funding: safe(row.company_total_funding),
+        latest_funding: safe(row.company_latest_funding),
+        latest_funding_amount: safe(row.company_latest_funding_amount),
+        address: safe(row.company_address),
+        city: safe(row.company_city),
+        state: safe(row.company_state),
+        country: safe(row.company_country),
+        phone: safe(row.company_phone),
         custom_fields: companyCustomFields,
         // created_at, updated_at, etc. can be added if needed
       } : null,
       department: row.department_id ? {
         id: row.department_id,
-        name: row.department_name
+        name: safe(row.department_name)
       } : null,
       owner: row.owner_id ? {
         id: row.owner_id,
-        first_name: row.owner_first_name,
-        last_name: row.owner_last_name,
-        email: row.owner_email,
-        role: row.owner_role
+        first_name: safe(row.owner_first_name),
+        last_name: safe(row.owner_last_name),
+        email: safe(row.owner_email),
+        role: safe(row.owner_role)
       } : null,
-      emails: emails || [],
-      phones: phones || []
+      emails: Array.isArray(emails) ? emails : [],
+      phones: Array.isArray(phones) ? phones : []
     };
     res.json({ contact });
   } catch (error) {
@@ -874,35 +879,458 @@ export const getDashboardStats = async (req, res) => {
 
 // Mark duplicates API
 export const markDuplicates = async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    // 1. Mark duplicates by email (set-based, fast)
-    await pool.query(`
-      UPDATE contacts c
-      JOIN (
-        SELECT e1.contact_id AS dupe_id, MIN(e2.contact_id) AS master_id
-        FROM emails e1
-        JOIN emails e2 ON e1.email = e2.email AND e1.contact_id != e2.contact_id
-        GROUP BY e1.contact_id
-      ) dupes ON c.id = dupes.dupe_id
-      SET c.is_duplicate = 1, c.duplicate_of = dupes.master_id
-      WHERE (c.is_duplicate = 0 OR c.is_duplicate IS NULL)
-    `);
-    // 2. Mark duplicates by first+last+company (set-based, fast)
-    await pool.query(`
-      UPDATE contacts c
-      JOIN (
-        SELECT c1.id AS dupe_id, MIN(c2.id) AS master_id
-        FROM contacts c1
-        JOIN contacts c2 ON c1.first_name = c2.first_name AND c1.last_name = c2.last_name AND c1.company_id = c2.company_id AND c1.id != c2.id
-        WHERE (c1.is_duplicate = 0 OR c1.is_duplicate IS NULL)
-        GROUP BY c1.id
-      ) dupes ON c.id = dupes.dupe_id
-      SET c.is_duplicate = 1, c.duplicate_of = dupes.master_id
-      WHERE (c.is_duplicate = 0 OR c.is_duplicate IS NULL)
-    `);
-    res.json({ message: `Duplicates marked (fast set-based update)` });
+    // 0. Clear previous duplicate markings
+    await connection.query('UPDATE contacts SET is_duplicate = 0, duplicate_of = NULL WHERE is_duplicate = 1 OR duplicate_of IS NOT NULL');
+
+    // 1. Load all contacts (id, first_name, last_name, company_id)
+    const [contacts] = await connection.query('SELECT id, first_name, last_name, company_id FROM contacts');
+    // 2. Load all emails (contact_id, email)
+    const [emails] = await connection.query('SELECT contact_id, email FROM emails');
+
+    // 3. Build graph: node = contact id, edge if duplicate by email or by (first+last+company)
+    // Build adjacency list
+    const adj = {};
+    contacts.forEach(c => { adj[c.id] = new Set(); });
+
+    // 3a. Duplicate by email (skip empty/null emails)
+    const emailMap = {};
+    for (const e of emails) {
+      if (!e.email || e.email.trim() === '') continue; // skip empty
+      if (!emailMap[e.email]) emailMap[e.email] = [];
+      emailMap[e.email].push(e.contact_id);
+    }
+    for (const ids of Object.values(emailMap)) {
+      if (ids.length > 1) {
+        for (let i = 0; i < ids.length; i++) {
+          for (let j = i + 1; j < ids.length; j++) {
+            adj[ids[i]].add(ids[j]);
+            adj[ids[j]].add(ids[i]);
+          }
+        }
+      }
+    }
+
+    // 3b. Duplicate by first+last+company (skip if first or last name is empty/null)
+    const nameCompanyMap = {};
+    for (const c of contacts) {
+      if (!c.first_name || !c.last_name) continue; // skip if missing
+      const key = `${(c.first_name||'').toLowerCase()}|${(c.last_name||'').toLowerCase()}|${c.company_id||''}`;
+      if (!nameCompanyMap[key]) nameCompanyMap[key] = [];
+      nameCompanyMap[key].push(c.id);
+    }
+    for (const ids of Object.values(nameCompanyMap)) {
+      if (ids.length > 1) {
+        for (let i = 0; i < ids.length; i++) {
+          for (let j = i + 1; j < ids.length; j++) {
+            adj[ids[i]].add(ids[j]);
+            adj[ids[j]].add(ids[i]);
+          }
+        }
+      }
+    }
+
+    // 4. Find connected components (BFS)
+    const visited = new Set();
+    const groups = [];
+    for (const id of Object.keys(adj)) {
+      if (!visited.has(Number(id))) {
+        const queue = [Number(id)];
+        const group = [];
+        visited.add(Number(id));
+        while (queue.length > 0) {
+          const curr = queue.shift();
+          group.push(curr);
+          for (const neighbor of adj[curr]) {
+            if (!visited.has(neighbor)) {
+              visited.add(neighbor);
+              queue.push(neighbor);
+            }
+          }
+        }
+        if (group.length > 1) groups.push(group);
+      }
+    }
+
+    // 5. For each group, pick master (lowest id), update others
+    let updatedCount = 0;
+    for (const group of groups) {
+      const masterId = Math.min(...group);
+      const dupes = group.filter(id => id !== masterId);
+      if (dupes.length > 0) {
+        await connection.query(
+          `UPDATE contacts SET is_duplicate = 1, duplicate_of = ? WHERE id IN (${dupes.map(() => '?').join(',')})`,
+          [masterId, ...dupes]
+        );
+        updatedCount += dupes.length;
+      }
+    }
+
+    res.json({ message: `Duplicates marked using graph-based connected components (empty values skipped)`, groups: groups.length, duplicates: updatedCount });
   } catch (error) {
     console.error('Error marking duplicates:', error);
     res.status(500).json({ error: 'Failed to mark duplicates', details: error.message });
+  } finally {
+    connection.release();
+  }
+};
+
+// List duplicate groups API
+export const getDuplicateGroups = async (req, res) => {
+  try {
+    // 1. Get all duplicate groups (where is_duplicate = 1 and duplicate_of is not null)
+    const [dupeRows] = await pool.query(
+      `SELECT * FROM contacts WHERE is_duplicate = 1 AND duplicate_of IS NOT NULL`
+    );
+    // 2. Group by duplicate_of
+    const groups = {};
+    for (const row of dupeRows) {
+      if (!groups[row.duplicate_of]) groups[row.duplicate_of] = [];
+      groups[row.duplicate_of].push(row);
+    }
+    // 3. Fetch master contacts for each group
+    const masterIds = Object.keys(groups);
+    let masters = [];
+    if (masterIds.length > 0) {
+      const [masterRows] = await pool.query(
+        `SELECT * FROM contacts WHERE id IN (${masterIds.map(() => '?').join(',')})`,
+        masterIds
+      );
+      masters = masterRows;
+    }
+    // 4. Collect all contact IDs (masters + duplicates)
+    const allContactIds = [
+      ...masters.map(m => m.id),
+      ...dupeRows.map(d => d.id)
+    ];
+    // 5. Fetch all emails and phones for these contacts
+    let emailsByContact = {}, phonesByContact = {};
+    if (allContactIds.length > 0) {
+      const [emails] = await pool.query(
+        `SELECT * FROM emails WHERE contact_id IN (${allContactIds.map(() => '?').join(',')})`,
+        allContactIds
+      );
+      emails.forEach(email => {
+        if (!emailsByContact[email.contact_id]) emailsByContact[email.contact_id] = [];
+        emailsByContact[email.contact_id].push(email);
+      });
+      const [phones] = await pool.query(
+        `SELECT * FROM phones WHERE contact_id IN (${allContactIds.map(() => '?').join(',')})`,
+        allContactIds
+      );
+      phones.forEach(phone => {
+        if (!phonesByContact[phone.contact_id]) phonesByContact[phone.contact_id] = [];
+        phonesByContact[phone.contact_id].push(phone);
+      });
+    }
+    // 6. Fetch company and department info for all involved company_ids and department_ids
+    const allCompanyIds = Array.from(new Set([
+      ...masters.map(m => m.company_id).filter(Boolean),
+      ...dupeRows.map(d => d.company_id).filter(Boolean)
+    ]));
+    let companyMap = {};
+    if (allCompanyIds.length > 0) {
+      const [companies] = await pool.query(
+        `SELECT * FROM companies WHERE id IN (${allCompanyIds.map(() => '?').join(',')})`,
+        allCompanyIds
+      );
+      companies.forEach(c => { companyMap[c.id] = c; });
+    }
+    const allDepartmentIds = Array.from(new Set([
+      ...masters.map(m => m.department_id).filter(Boolean),
+      ...dupeRows.map(d => d.department_id).filter(Boolean)
+    ]));
+    let departmentMap = {};
+    if (allDepartmentIds.length > 0) {
+      const [departments] = await pool.query(
+        `SELECT * FROM departments WHERE id IN (${allDepartmentIds.map(() => '?').join(',')})`,
+        allDepartmentIds
+      );
+      departments.forEach(d => { departmentMap[d.id] = d; });
+    }
+    // 7. Attach emails, phones, company, and department to each contact
+    function enrichContact(c) {
+      let customFields = c.custom_fields;
+      if (typeof customFields === 'string') {
+        try { customFields = JSON.parse(customFields); } catch { customFields = {}; }
+      }
+      return {
+        id: c.id,
+        first_name: c.first_name,
+        last_name: c.last_name,
+        title: c.title,
+        seniority: c.seniority,
+        department_id: c.department_id,
+        department: c.department_id ? departmentMap[c.department_id] || null : null,
+        company_id: c.company_id,
+        company: c.company_id ? companyMap[c.company_id] || null : null,
+        owner_id: c.owner_id,
+        stage: c.stage,
+        lists: c.lists,
+        last_contacted: c.last_contacted,
+        person_linkedin_url: c.person_linkedin_url,
+        contact_owner: c.contact_owner,
+        address: c.address,
+        city: c.city,
+        state: c.state,
+        country: c.country,
+        postal_code: c.postal_code,
+        custom_fields: customFields,
+        emails: emailsByContact[c.id] || [],
+        phones: phonesByContact[c.id] || [],
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+        is_duplicate: c.is_duplicate,
+        duplicate_of: c.duplicate_of
+      };
+    }
+    // 8. Build response: [{ master, duplicates: [...] }, ...]
+    const result = masterIds.map(masterId => {
+      const master = enrichContact(masters.find(m => m.id == masterId));
+      return {
+        master,
+        duplicates: (groups[masterId] || []).map(enrichContact)
+      };
+    });
+    res.json({ duplicate_groups: result });
+  } catch (error) {
+    console.error('Get duplicate groups error:', error);
+    res.status(500).json({ error: 'Failed to fetch duplicate groups', details: error.message });
+  }
+};
+
+// Merge contacts API
+export const mergeContacts = async (req, res) => {
+  const { contact_ids, fields } = req.body;
+  if (!Array.isArray(contact_ids) || contact_ids.length < 2 || !fields) {
+    return res.status(400).json({ error: 'Provide at least two contact_ids and fields to merge.' });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    // 1. Pick master (lowest ID)
+    const masterId = Math.min(...contact_ids);
+    const duplicateIds = contact_ids.filter(id => id !== masterId);
+    // 2. Update master with selected fields (only relevant fields)
+    const allowedFields = [
+      'first_name', 'last_name', 'title', 'seniority', 'department_id', 'company_id', 'owner_id',
+      'stage', 'lists', 'last_contacted', 'person_linkedin_url', 'contact_owner',
+      'address', 'city', 'state', 'country', 'postal_code', 'custom_fields'
+    ];
+    const updateFields = [];
+    const updateValues = [];
+    for (const key of allowedFields) {
+      if (key in fields) {
+        let value = fields[key];
+        // Normalize: undefined, null, '' => null
+        if (value === undefined || value === null || value === '') {
+          value = null;
+        }
+        // Only update owner_id if valid (not 0, not empty)
+        if (key === 'owner_id' && (!value || value === 0)) {
+          continue;
+        }
+        if (key === 'custom_fields' && typeof value === 'object' && value !== null) {
+          updateFields.push('custom_fields = ?');
+          updateValues.push(JSON.stringify(value));
+        } else {
+          updateFields.push(`${key} = ?`);
+          updateValues.push(value);
+        }
+      }
+    }
+    if (updateFields.length > 0) {
+      await connection.query(
+        `UPDATE contacts SET ${updateFields.join(', ')} WHERE id = ?`,
+        [...updateValues, masterId]
+      );
+    }
+    // 3. Move emails/phones to master (avoid duplicates)
+    if (Array.isArray(fields.emails)) {
+      await connection.query('DELETE FROM emails WHERE contact_id = ?', [masterId]);
+      const seenEmails = new Set();
+      for (const emailObj of fields.emails) {
+        if (!emailObj.email || seenEmails.has(emailObj.email)) continue;
+        seenEmails.add(emailObj.email);
+        await connection.query(
+          'INSERT INTO emails (contact_id, email, type, is_primary) VALUES (?, ?, ?, ?)',
+          [masterId, emailObj.email, emailObj.type || 'primary', emailObj.is_primary || false]
+        );
+      }
+    }
+    if (Array.isArray(fields.phones)) {
+      await connection.query('DELETE FROM phones WHERE contact_id = ?', [masterId]);
+      const seenPhones = new Set();
+      for (const phoneObj of fields.phones) {
+        if (!phoneObj.phone || seenPhones.has(phoneObj.phone)) continue;
+        seenPhones.add(phoneObj.phone);
+        await connection.query(
+          'INSERT INTO phones (contact_id, phone, type) VALUES (?, ?, ?)',
+          [masterId, phoneObj.phone, phoneObj.type || 'work']
+        );
+      }
+    }
+    // 4. Mark duplicates as merged (soft delete: set is_duplicate=2, duplicate_of=masterId)
+    if (duplicateIds.length > 0) {
+      await connection.query(
+        `UPDATE contacts SET is_duplicate = 2, duplicate_of = ? WHERE id IN (${duplicateIds.map(() => '?').join(',')})`,
+        [masterId, ...duplicateIds]
+      );
+    }
+    await connection.commit();
+    // 5. Return merged contact
+    const [rows] = await connection.query('SELECT * FROM contacts WHERE id = ?', [masterId]);
+    const mergedContact = rows[0];
+    const [emails] = await connection.query('SELECT * FROM emails WHERE contact_id = ?', [masterId]);
+    const [phones] = await connection.query('SELECT * FROM phones WHERE contact_id = ?', [masterId]);
+    mergedContact.emails = emails;
+    mergedContact.phones = phones;
+    res.json({ message: 'Contacts merged', contact: mergedContact });
+  } catch (error) {
+    await connection.rollback();
+    console.error('Merge contacts error:', error);
+    res.status(500).json({ error: 'Failed to merge contacts', details: error.message });
+  } finally {
+    connection.release();
+  }
+};
+
+// Predict email for a contact based on company pattern
+export const predictEmail = async (req, res) => {
+  const contactId = req.params.id;
+  try {
+    // 1. Get the contact and their company
+    const [[contact]] = await pool.execute(
+      `SELECT c.id, c.first_name, c.last_name, c.company_id, co.name as company_name
+       FROM contacts c
+       LEFT JOIN companies co ON c.company_id = co.id
+       WHERE c.id = ?`,
+      [contactId]
+    );
+    if (!contact) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+    if (!contact.company_id) {
+      return res.status(400).json({ error: 'Contact has no company' });
+    }
+    // 2. Get all emails for contacts in the same company
+    const [companyContacts] = await pool.execute(
+      `SELECT c.id, c.first_name, c.last_name, e.email
+       FROM contacts c
+       JOIN emails e ON c.id = e.contact_id
+       WHERE c.company_id = ? AND e.email IS NOT NULL AND TRIM(e.email) <> ''`,
+      [contact.company_id]
+    );
+    if (!companyContacts.length) {
+      return res.status(404).json({ error: 'We Dont have any available email of this company to predict...' });
+    }
+    // 3. Infer the most common email pattern
+    const patternCounts = {};
+    const patternSamples = {};
+    const getPattern = (first, last, email) => {
+      const [user, domain] = email.split('@');
+      if (!user || !domain) return null;
+      const f = (first || '').toLowerCase();
+      const l = (last || '').toLowerCase();
+      if (!f || !l) return null;
+      if (user === `${f}.${l}`) return 'first.last';
+      if (user === `${f}${l}`) return 'firstlast';
+      if (user === `${f[0]}${l}`) return 'flast';
+      if (user === `${f}${l[0]}`) return 'firstl';
+      if (user === `${f[0]}.${l}`) return 'f.last';
+      if (user === `${f}_${l}`) return 'first_last';
+      if (user === `${l}${f}`) return 'lastfirst';
+      if (user === `${l}.${f}`) return 'last.first';
+      if (user === `${f}`) return 'first';
+      if (user === `${l}`) return 'last';
+      return null;
+    };
+    for (const c of companyContacts) {
+      const pattern = getPattern(c.first_name, c.last_name, c.email);
+      if (pattern) {
+        patternCounts[pattern] = (patternCounts[pattern] || 0) + 1;
+        if (!patternSamples[pattern]) patternSamples[pattern] = [];
+        if (patternSamples[pattern].length < 3) patternSamples[pattern].push(c.email);
+      }
+    }
+    const sortedPatterns = Object.entries(patternCounts).sort((a, b) => b[1] - a[1]);
+    if (!sortedPatterns.length) {
+      return res.status(404).json({ error: 'Could not infer email pattern for this company' });
+    }
+    const [bestPattern, count] = sortedPatterns[0];
+    // 4. Predict the email for the given contact
+    const f = (contact.first_name || '').toLowerCase();
+    const l = (contact.last_name || '').toLowerCase();
+    let userPart = '';
+    switch (bestPattern) {
+      case 'first.last': userPart = `${f}.${l}`; break;
+      case 'firstlast': userPart = `${f}${l}`; break;
+      case 'flast': userPart = `${f[0]}${l}`; break;
+      case 'firstl': userPart = `${f}${l[0]}`; break;
+      case 'f.last': userPart = `${f[0]}.${l}`; break;
+      case 'first_last': userPart = `${f}_${l}`; break;
+      case 'lastfirst': userPart = `${l}${f}`; break;
+      case 'last.first': userPart = `${l}.${f}`; break;
+      case 'first': userPart = `${f}`; break;
+      case 'last': userPart = `${l}`; break;
+      default: userPart = ''; break;
+    }
+    const domain = companyContacts[0].email.split('@')[1];
+    const predicted_email = userPart && domain ? `${userPart}@${domain}` : '';
+    const accuracy = count / companyContacts.length;
+    res.json({
+      predicted_email,
+      pattern: bestPattern,
+      accuracy,
+      pattern_count: count,
+      total_company_emails: companyContacts.length
+    });
+  } catch (err) {
+    console.error('Error in predictEmail:', err);
+    res.status(500).json({ error: 'Failed to predict email' });
+  }
+};
+
+// Save predicted email as primary for a contact
+export const savePredictedEmail = async (req, res) => {
+  const contactId = req.params.id;
+  const { email } = req.body;
+  if (!email || !contactId) {
+    return res.status(400).json({ error: 'Email and contact ID are required' });
+  }
+  try {
+    // Remove existing primary email for this contact
+    await pool.execute('DELETE FROM emails WHERE contact_id = ? AND type = ? AND is_primary = 1', [contactId, 'primary']);
+    // Insert new primary email
+    await pool.execute(
+      'INSERT INTO emails (contact_id, email, type, is_primary) VALUES (?, ?, ?, ?)',
+      [contactId, email, 'primary', true]
+    );
+    res.json({ message: 'Primary email saved successfully', email });
+  } catch (err) {
+    console.error('Error saving predicted email:', err);
+    res.status(500).json({ error: 'Failed to save primary email' });
+  }
+};
+
+// Get all contacts missing an email (no email row or email is NULL/empty)
+export const getContactsMissingEmails = async (req, res) => {
+  try {
+    // Find contacts with no email row or only empty/null emails
+    const [contacts] = await pool.execute(`
+      SELECT c.id, c.first_name, c.last_name, c.company_id, co.name as company_name
+      FROM contacts c
+      LEFT JOIN emails e ON c.id = e.contact_id AND (e.email IS NOT NULL AND TRIM(e.email) <> '')
+      LEFT JOIN companies co ON c.company_id = co.id
+      WHERE e.id IS NULL
+         OR e.email IS NULL
+         OR TRIM(e.email) = ''
+      GROUP BY c.id
+    `);
+    res.json({ contacts });
+  } catch (err) {
+    console.error('Error fetching contacts missing emails:', err);
+    res.status(500).json({ error: 'Failed to fetch contacts missing emails' });
   }
 };

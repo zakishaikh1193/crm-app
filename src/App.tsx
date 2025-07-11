@@ -15,7 +15,9 @@ import CompanyListPage from './pages/CompanyListPage';
 import CreateCompanyPage from './pages/CreateCompanyPage';
 import ImportDataPage from './pages/ImportDataPage';
 import DataUtilityPage from './pages/DataUtilityPage';
-
+import ContactMergePage from './pages/ContactMergePage';
+import EmailFinderPage from './pages/EmailFinderPage';
+import MissingEmailsPage from './pages/MissingEmailsPage';
 // Create advanced Material-UI theme with modern styling
 const theme = createTheme({
   palette: {
@@ -266,11 +268,15 @@ function App() {
               <Route path="dashboard" element={<DashboardPage />} />
               <Route path="contacts" element={<ContactListPage />} />
               <Route path="contacts/new" element={<CreateContactPage />} />
+              <Route path="/contacts/merge" element={<ContactMergePage />} />              
               <Route path="contacts/:id" element={<ContactDetailPage />} />
               <Route path="companies" element={<CompanyListPage />} />
               <Route path="companies/new" element={<CreateCompanyPage />} />
               <Route path="import" element={<ImportDataPage />} />
               <Route path="data-utility" element={<DataUtilityPage />} />
+              <Route path="email-finder/:id" element={<EmailFinderPage />} />
+              <Route path="missing-emails" element={<MissingEmailsPage />} />
+
             </Route>
             
             {/* Catch all route */}
