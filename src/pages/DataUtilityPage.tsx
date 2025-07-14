@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Box, Button, Typography, Alert, CircularProgress, Card, CardContent, Grid, Divider, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton } from '@mui/material';
+import { Box, Button, Typography, Alert, CircularProgress, Card, CardContent, Grid, Divider, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Pagination } from '@mui/material';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import EmailIcon from '@mui/icons-material/Email';
+import DeleteIcon from '@mui/icons-material/Delete';
 import { useNavigate } from 'react-router-dom';
 import api from '../config/axiosConfig';
 
@@ -11,6 +13,13 @@ const DataUtilityPage: React.FC = () => {
   const [duplicates, setDuplicates] = useState<any[]>([]);
   const [duplicateGroups, setDuplicateGroups] = useState<any[]>([]);
   const [loadingDuplicates, setLoadingDuplicates] = useState(false);
+  const [duplicatePage, setDuplicatePage] = useState(1);
+  const [duplicatePagination, setDuplicatePagination] = useState({
+    total: 0,
+    total_pages: 0,
+    current_page: 1,
+    per_page: 20
+  });
   const navigate = useNavigate();
 
   const handleCleanData = async () => {
@@ -30,17 +39,52 @@ const DataUtilityPage: React.FC = () => {
     }
   };
 
-  const handleFetchDuplicates = async () => {
+  const handleClearDuplicates = async () => {
+    if (!window.confirm('Are you sure you want to clear all duplicate markings? This will reset all duplicate groups.')) {
+      return;
+    }
+    setLoading(true);
+    setSuccess('');
+    setError('');
+    try {
+      await api.post('/contacts/clear-duplicates');
+      setSuccess('All duplicate markings cleared successfully!');
+      setDuplicateGroups([]);
+      setDuplicatePagination({
+        total: 0,
+        total_pages: 0,
+        current_page: 1,
+        per_page: 20
+      });
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to clear duplicates');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFetchDuplicates = async (page = 1) => {
     setLoadingDuplicates(true);
     setError('');
     try {
-      const res = await api.get('/contacts/duplicates');
+      const res = await api.get(`/contacts/duplicates?page=${page}&limit=10`);
       setDuplicateGroups(res.data.duplicate_groups || []);
+      setDuplicatePagination(res.data.pagination || {
+        total: 0,
+        total_pages: 0,
+        current_page: page,
+        per_page: 10
+      });
+      setDuplicatePage(page);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to fetch duplicate groups');
     } finally {
       setLoadingDuplicates(false);
     }
+  };
+
+  const handleDuplicatePageChange = (event: React.ChangeEvent<unknown>, page: number) => {
+    handleFetchDuplicates(page);
   };
 
   return (
@@ -63,18 +107,48 @@ const DataUtilityPage: React.FC = () => {
       <Button
         variant="outlined"
         color="secondary"
-        onClick={handleFetchDuplicates}
+        onClick={() => handleFetchDuplicates(1)}
         disabled={loadingDuplicates}
-        sx={{ mb: 3 }}
+        sx={{ mb: 3, mr: 2 }}
       >
         {loadingDuplicates ? <CircularProgress size={24} /> : 'Review Duplicates'}
+      </Button>
+      <Button
+        variant="outlined"
+        color="info"
+        startIcon={<EmailIcon />}
+        onClick={() => navigate('/missing-emails')}
+        sx={{ mb: 3, mr: 2 }}
+      >
+        Missing Emails
+      </Button>
+      <Button
+        variant="outlined"
+        color="warning"
+        startIcon={<DeleteIcon />}
+        onClick={() => navigate('/merged-duplicates')}
+        sx={{ mb: 3 }}
+      >
+        Merged Duplicates
+      </Button>
+      <Button
+        variant="outlined"
+        color="error"
+        startIcon={<DeleteIcon />}
+        onClick={handleClearDuplicates}
+        disabled={loading}
+        sx={{ mb: 3, mr: 2 }}
+      >
+        {loading ? <CircularProgress size={24} /> : 'Clear All Duplicate Markings'}
       </Button>
       {success && <Alert severity="success" sx={{ mb: 2 }}>{success}</Alert>}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {/* Duplicates Review UI */}
       {duplicateGroups.length > 0 && (
         <Box>
-          <Typography variant="h6" sx={{ mt: 3, mb: 2 }}>Duplicate Groups</Typography>
+          <Typography variant="h6" sx={{ mt: 3, mb: 2 }}>
+            Duplicate Groups ({duplicatePagination.total} total)
+          </Typography>
           {duplicateGroups.map((group, idx) => {
             const allContacts = [group.master, ...group.duplicates];
             return (
@@ -100,7 +174,9 @@ const DataUtilityPage: React.FC = () => {
                         <TableRow>
                           <TableCell>Name</TableCell>
                           {allContacts.map((c: any) => (
-                            <TableCell key={c.id}>{[c.first_name, c.last_name].filter(Boolean).join(' ')}</TableCell>
+                            <TableCell key={c.id}>
+                              {[c.first_name, c.last_name].filter(Boolean).join(' ') || 'Unnamed'}
+                            </TableCell>
                           ))}
                         </TableRow>
                         <TableRow>
@@ -112,7 +188,17 @@ const DataUtilityPage: React.FC = () => {
                         <TableRow>
                           <TableCell>Company</TableCell>
                           {allContacts.map((c: any) => (
-                            <TableCell key={c.id}>{c.company_name || '-'}</TableCell>
+                            <TableCell key={c.id}>
+                              {c.company?.name || '-'}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                        <TableRow>
+                          <TableCell>Department</TableCell>
+                          {allContacts.map((c: any) => (
+                            <TableCell key={c.id}>
+                              {c.department?.name || '-'}
+                            </TableCell>
                           ))}
                         </TableRow>
                         <TableRow>
@@ -162,6 +248,19 @@ const DataUtilityPage: React.FC = () => {
               </Card>
             );
           })}
+          {/* Pagination */}
+          {duplicatePagination.total_pages > 1 && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
+              <Pagination
+                count={duplicatePagination.total_pages}
+                page={duplicatePage}
+                onChange={handleDuplicatePageChange}
+                color="primary"
+                showFirstButton
+                showLastButton
+              />
+            </Box>
+          )}
         </Box>
       )}
     </Box>

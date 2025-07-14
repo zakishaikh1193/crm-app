@@ -63,11 +63,21 @@ const CompanyListPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCompanies, setTotalCompanies] = useState(0);
-  const itemsPerPage = 20;
+  const itemsPerPage = 10;
 
   useEffect(() => {
     fetchCompanies();
-  }, [currentPage, searchTerm]);
+  }, [currentPage]);
+
+  // Debounced search effect
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setCurrentPage(1); // Reset to first page when searching
+      fetchCompanies();
+    }, 500); // 500ms delay
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
   const fetchCompanies = async () => {
     try {
@@ -76,12 +86,14 @@ const CompanyListPage: React.FC = () => {
         page: currentPage.toString(),
         limit: itemsPerPage.toString(),
       });
+      // Note: Search functionality will be implemented in the backend later
+      // For now, we'll keep the search parameter but it won't be processed
       if (searchTerm) {
         params.append('search', searchTerm);
       }
       const response = await api.get(`/companies?${params.toString()}`);
       setCompanies(response.data.companies);
-      setTotalPages(response.data.pagination.total_pages);
+      setTotalPages(response.data.pagination.totalPages);
       setTotalCompanies(response.data.pagination.total);
       setError('');
     } catch (err: any) {
@@ -102,10 +114,8 @@ const CompanyListPage: React.FC = () => {
     }
   };
 
-  const filteredCompanies = companies.filter(company =>
-    company.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (company.industry && company.industry.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  // Remove client-side filtering since we're using server-side pagination
+  // The search will be handled by the backend when we implement search functionality
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString();
@@ -278,7 +288,7 @@ const CompanyListPage: React.FC = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {filteredCompanies.map((company, index) => (
+                  {companies.map((company, index) => (
                     <Slide direction="up" in={true} timeout={300 + index * 100} key={company.id}>
                       <TableRow
                         sx={{
@@ -429,7 +439,10 @@ const CompanyListPage: React.FC = () => {
         </Card>
       </Grow>
       {/* Pagination Controls */}
-      <Box display="flex" justifyContent="center" mt={3}>
+      <Box display="flex" justifyContent="center" alignItems="center" mt={3} gap={2}>
+        <Typography variant="body2" sx={{ color: '#64748b' }}>
+          Showing {companies.length} of {totalCompanies} companies
+        </Typography>
         <Pagination
           count={totalPages}
           page={currentPage}
@@ -437,6 +450,8 @@ const CompanyListPage: React.FC = () => {
           color="primary"
           shape="rounded"
           size="large"
+          showFirstButton
+          showLastButton
         />
       </Box>
     </Box>

@@ -103,6 +103,11 @@ const ContactDetailPage: React.FC = () => {
     return isNaN(d.getTime()) ? 'N/A' : d.toLocaleDateString();
   }
 
+  // Helper to filter out empty/null emails/phones
+  function filterNonEmpty(arr: any[], field: string) {
+    return (Array.isArray(arr) ? arr : []).filter(e => e && typeof e[field] === 'string' && e[field].trim() !== '');
+  }
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
@@ -142,6 +147,9 @@ const ContactDetailPage: React.FC = () => {
       </Box>
     );
   }
+
+  const filteredEmails = filterNonEmpty(contact.emails, 'email');
+  const filteredPhones = filterNonEmpty(contact.phones, 'phone');
 
   return (
     <Box>
@@ -226,8 +234,8 @@ const ContactDetailPage: React.FC = () => {
                   <Typography variant="body2" color="text.secondary">
                     Emails
                   </Typography>
-                  {contact.emails && contact.emails.length > 0 ? (
-                    contact.emails.map((emailObj) => (
+                  {filteredEmails.length > 0 ? (
+                    filteredEmails.map((emailObj) => (
                       <Typography variant="body1" key={emailObj.id}>
                         {emailObj.email} ({emailObj.type})
                       </Typography>
@@ -240,9 +248,8 @@ const ContactDetailPage: React.FC = () => {
                   <Typography variant="body2" color="text.secondary">
                     Phones
                   </Typography>
-                  {contact.phones && contact.phones.length > 0 ? (
-                    contact.phones
-                      .filter(phoneObj => phoneObj.phone && phoneObj.phone.trim() !== '')
+                  {filteredPhones.length > 0 ? (
+                    filteredPhones
                       .map((phoneObj) => (
                         <Typography variant="body1" key={phoneObj.id}>
                           {phoneObj.phone.replace(/^'+|'+$/g, '')}{' '}

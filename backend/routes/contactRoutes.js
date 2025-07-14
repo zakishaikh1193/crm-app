@@ -7,8 +7,10 @@ import {
   updateContact, 
   deleteContact,
   importContacts,
+  importContactsFromFiles,
   getDashboardStats,
   markDuplicates,
+  clearDuplicates,
   getDuplicateGroups,
   mergeContacts,
   predictEmail,
@@ -28,6 +30,7 @@ router.use(authenticateUserOrAdmin);
 router.get('/fields', getContactFields);
 router.get('/', getContacts);
 router.post('/import', importContacts);
+router.post('/import-from-files', importContactsFromFiles);
 router.get('/dashboard-stats', getDashboardStats);
 router.get('/duplicates', getDuplicateGroups);
 router.get('/missing-emails', getContactsMissingEmails);
@@ -40,6 +43,7 @@ router.post('/', createContact);
 router.put('/:id', updateContact);
 router.delete('/:id', deleteContact);
 router.post('/mark-duplicates', markDuplicates);
+router.post('/clear-duplicates', clearDuplicates);
 router.post('/merge', mergeContacts);
 router.post('/delete-duplicates', deleteMergedDuplicates);
 

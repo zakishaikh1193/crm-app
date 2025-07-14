@@ -1,13 +1,43 @@
 import pool from '../config/database.js';
 
-// Get all companies (for dropdowns)
+// Get all companies with pagination
 export const getCompanies = async (req, res) => {
   try {
+    // Get pagination parameters from query string
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    // Validate pagination parameters
+    if (page < 1 || limit < 1 || limit > 100) {
+      return res.status(400).json({ 
+        error: 'Invalid pagination parameters. Page must be >= 1, limit must be between 1 and 100.' 
+      });
+    }
+
+    // Get total count for pagination metadata
+    const [countResult] = await pool.execute(
+      'SELECT COUNT(*) as total FROM companies'
+    );
+    const totalCompanies = countResult[0].total;
+    const totalPages = Math.ceil(totalCompanies / limit);
+
+    // Get paginated companies - use template literals like contacts controller
     const [companies] = await pool.execute(
-      'SELECT id, name, industry, website, phone FROM companies ORDER BY name'
+      `SELECT id, name, industry, website, phone FROM companies ORDER BY name LIMIT ${Number(limit)} OFFSET ${Number(offset)}`
     );
 
-    res.json({ companies });
+    res.json({ 
+      companies,
+      pagination: {
+        page,
+        limit,
+        total: totalCompanies,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1
+      }
+    });
   } catch (error) {
     console.error('Get companies error:', error);
     res.status(500).json({ error: 'Failed to fetch companies' });

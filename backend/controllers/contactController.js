@@ -1,4 +1,6 @@
 import pool from '../config/database.js';
+import fs from 'fs';
+import path from 'path';
 
 // Helper: get all mappable fields from new schema
 const getAllMappableFields = () => [
@@ -290,8 +292,8 @@ export const getContacts = async (req, res) => {
           email: row.owner_email,
           role: row.owner_role
         } : null,
-        emails: emailsByContact[row.contact_id] || [],
-        phones: phonesByContact[row.contact_id] || []
+        emails: filterNonEmpty(emailsByContact[row.contact_id], 'email'),
+        phones: filterNonEmpty(phonesByContact[row.contact_id], 'phone')
       };
     });
     res.json({
@@ -440,8 +442,8 @@ export const getContact = async (req, res) => {
         email: safe(row.owner_email),
         role: safe(row.owner_role)
       } : null,
-      emails: Array.isArray(emails) ? emails : [],
-      phones: Array.isArray(phones) ? phones : []
+      emails: filterNonEmpty(emails, 'email'),
+      phones: filterNonEmpty(phones, 'phone')
     };
     res.json({ contact });
   } catch (error) {
@@ -786,16 +788,19 @@ export const deleteContact = async (req, res) => {
   }
 };
 
-// Bulk import contacts
+// Bulk import contacts - ULTRA FAST VERSION
 export const importContacts = async (req, res) => {
   try {
     const { files, mappings } = req.body;
     if (!files || !Array.isArray(files) || !mappings || !Array.isArray(mappings)) {
       return res.status(400).json({ error: 'Invalid request format' });
     }
+
     let totalImported = 0;
     const errors = [];
     const allRows = [];
+    
+    // Collect all rows
     files.forEach((fileData, fileIndex) => {
       if (fileData && Array.isArray(fileData) && mappings[fileIndex]) {
         fileData.forEach(row => {
@@ -803,206 +808,264 @@ export const importContacts = async (req, res) => {
         });
       }
     });
+
+    console.log(`Starting import of ${allRows.length} rows`);
+
+    // Pre-cache all companies and departments to avoid repeated lookups
+    const companyCache = new Map();
+    const departmentCache = new Map();
+    
+    // Get all existing companies and departments in one query
+    const [existingCompanies] = await pool.execute('SELECT id, name FROM companies');
+    existingCompanies.forEach(company => {
+      companyCache.set(company.name, company.id);
+    });
+
+    const [existingDepartments] = await pool.execute('SELECT id, name FROM departments');
+    existingDepartments.forEach(dept => {
+      departmentCache.set(dept.name, dept.id);
+    });
+
+    // Collect all unique companies and departments from the import data
+    const newCompanies = new Set();
+    const newDepartments = new Set();
+    
+    for (const { row, mapping } of allRows) {
+      Object.entries(mapping).forEach(([fileColumn, crmField]) => {
+        if (crmField === 'company_name' && row[fileColumn]) {
+          const companyName = normalizeEmpty(row[fileColumn]);
+          if (companyName && !companyCache.has(companyName)) {
+            newCompanies.add(companyName);
+          }
+        } else if (crmField === 'department' && row[fileColumn]) {
+          const deptName = normalizeEmpty(row[fileColumn]);
+          if (deptName && !departmentCache.has(deptName)) {
+            newDepartments.add(deptName);
+          }
+        }
+      });
+    }
+
+    // Batch insert new companies
+    if (newCompanies.size > 0) {
+      const companyValues = Array.from(newCompanies).map(name => [name]);
+      const companySql = 'INSERT INTO companies (name) VALUES (?)';
+      for (const values of companyValues) {
+        const [result] = await pool.execute(companySql, values);
+        companyCache.set(values[0], result.insertId);
+      }
+      console.log(`Created ${newCompanies.size} new companies`);
+    }
+
+    // Batch insert new departments
+    if (newDepartments.size > 0) {
+      const deptValues = Array.from(newDepartments).map(name => [name]);
+      const deptSql = 'INSERT INTO departments (name) VALUES (?)';
+      for (const values of deptValues) {
+        const [result] = await pool.execute(deptSql, values);
+        departmentCache.set(values[0], result.insertId);
+      }
+      console.log(`Created ${newDepartments.size} new departments`);
+    }
+
+    // Process contacts in batches - UNLIMITED VERSION
+    const BATCH_SIZE = 1000; // Larger batch size for unlimited processing
+    const contactBatches = [];
+    const emailBatches = [];
+    const phoneBatches = [];
+
     for (let i = 0; i < allRows.length; i++) {
       const { row, mapping, fileIndex } = allRows[i];
+      
       try {
-          const contactData = {};
-          const customFields = {};
-          const emails = [];
-          const phones = [];
-          let company_id = null;
-          let department_id = null;
-          let companyData = null;
-          // Extra email fields
-          const emailFieldMap = {
-            email_status: 'status',
-            email_source: 'source',
-            email_confidence: 'confidence',
-            email_catch_all_status: 'catch_all_status',
-            email_last_verified_at: 'last_verified_at',
-            secondary_email_source: 'source',
-            tertiary_email_source: 'source',
-            unsubscribe: 'unsubscribe',
-          };
-          Object.entries(mapping).forEach(([fileColumn, crmField]) => {
-            if (crmField && crmField !== '-- Ignore --' && row[fileColumn] !== undefined) {
-              if (crmField.startsWith('custom_fields.')) {
-                const customFieldName = crmField.replace('custom_fields.', '');
-                customFields[customFieldName] = row[fileColumn];
-              } else if (crmField === 'email' || crmField === 'secondary_email' || crmField === 'tertiary_email' || crmField === 'personal_email') {
-                // Gather all possible email fields for this type
-                const emailObj = { email: row[fileColumn], type: crmField === 'email' ? 'primary' : crmField.replace('_email', '') };
-                // Attach extra fields if present in mapping
-                Object.entries(emailFieldMap).forEach(([mapKey, dbKey]) => {
-                  if (mapping[mapKey] && row[mapping[mapKey]] !== undefined && row[mapping[mapKey]] !== '') {
-                    emailObj[dbKey] = row[mapping[mapKey]];
-                  }
-                });
-                emails.push(emailObj);
-              } else if (crmField.endsWith('_phone')) {
-                // Only add to phones if NOT company_phone
-                if (crmField !== 'company_phone') {
-                  phones.push({ phone: row[fileColumn], type: crmField.replace('_phone', '') });
-                } else {
-                  // company_phone goes to companyData
-                  if (!companyData) companyData = {};
-                  companyData['phone'] = row[fileColumn];
-                }
-              } else if (crmField === 'company_name') {
-                contactData.company_name = row[fileColumn];
-              } else if (crmField === 'department') {
-                contactData.department = row[fileColumn];
-              } else if (crmField === 'contact_address') { contactData.address = row[fileColumn]; }
-              else if (crmField === 'contact_city') { contactData.city = row[fileColumn]; }
-              else if (crmField === 'contact_state') { contactData.state = row[fileColumn]; }
-              else if (crmField === 'contact_country') { contactData.country = row[fileColumn]; }
-              else if (crmField === 'contact_postal_code') { contactData.postal_code = row[fileColumn]; }
-              else if (crmField.startsWith('company_')) { 
-                if (!companyData) companyData = {};
-                companyData[crmField.replace('company_', '')] = row[fileColumn];
-              } else {
-                contactData[crmField] = row[fileColumn];
-              }
-            }
-          });
-          // Normalize all fields in contactData, companyData, customFields
-          Object.keys(contactData).forEach(k => { contactData[k] = normalizeEmpty(contactData[k]); });
-          if (companyData) Object.keys(companyData).forEach(k => { companyData[k] = normalizeEmpty(companyData[k]); });
-          Object.keys(customFields).forEach(k => { customFields[k] = normalizeEmpty(customFields[k]); });
-          // Normalize emails/phones
-          emails.forEach(e => { e.email = normalizeEmpty(e.email); });
-          phones.forEach(p => { p.phone = normalizeEmpty(p.phone); });
-          // Look up or create company
-          if (contactData.company_name) {
-            // Build all possible company fields
-            const allCompanyFields = [
-              'name','website','linkedin_url','facebook_url','twitter_url','industry','num_employees','annual_revenue','total_funding','latest_funding','latest_funding_amount','last_raised_at','address','city','state','country','phone','seo_description','keywords','subsidiary_of','custom_fields'
-            ];
-            // If company exists, update it
-            const [companies] = await pool.execute('SELECT id FROM companies WHERE name = ?', [contactData.company_name]);
-            if (companies.length > 0) {
-              company_id = companies[0].id;
-              if (companyData && Object.keys(companyData).length > 0) {
-                // Only update fields that are present in companyData
-                const updateFields = [];
-                const updateValues = [];
-                for (const key of allCompanyFields) {
-                  if (key in companyData && companyData[key] !== undefined) {
-                    updateFields.push(`${key} = ?`);
-                    updateValues.push(companyData[key]);
-                  }
-                }
-                if (updateFields.length > 0) {
-                  await pool.execute(
-                    `UPDATE companies SET ${updateFields.join(', ')} WHERE id = ?`,
-                    [...updateValues, company_id]
-                  );
-                }
-              }
-            } else {
-              // Prepare company insert fields
-              const fields = ['name'];
-              const values = [contactData.company_name];
-              if (companyData) {
-                for (const key of allCompanyFields) {
-                  if (key in companyData && companyData[key] !== undefined) {
-                    fields.push(key);
-                    values.push(companyData[key]);
-                  }
-                }
-              }
-              const placeholders = fields.map(() => '?').join(', ');
-              const [result] = await pool.execute(
-                `INSERT INTO companies (${fields.join(', ')}) VALUES (${placeholders})`,
-                values
-              );
-              company_id = result.insertId;
+        const contactData = {};
+        const customFields = {};
+        const emails = [];
+        const phones = [];
+        let company_id = null;
+        let department_id = null;
+
+        // Process mapping
+        Object.entries(mapping).forEach(([fileColumn, crmField]) => {
+          if (crmField && crmField !== '-- Ignore --' && row[fileColumn] !== undefined) {
+            if (crmField.startsWith('custom_fields.')) {
+              const customFieldName = crmField.replace('custom_fields.', '');
+              customFields[customFieldName] = row[fileColumn];
+            } else if (crmField === 'email' || crmField === 'secondary_email' || crmField === 'tertiary_email' || crmField === 'personal_email') {
+              const emailObj = { email: row[fileColumn], type: crmField === 'email' ? 'primary' : crmField.replace('_email', '') };
+              emails.push(emailObj);
+            } else if (crmField.endsWith('_phone') && crmField !== 'company_phone') {
+              phones.push({ phone: row[fileColumn], type: crmField.replace('_phone', '') });
+            } else if (crmField === 'company_name') {
+              contactData.company_name = row[fileColumn];
+            } else if (crmField === 'department') {
+              contactData.department = row[fileColumn];
+            } else if (crmField === 'contact_address') { contactData.address = row[fileColumn]; }
+            else if (crmField === 'contact_city') { contactData.city = row[fileColumn]; }
+            else if (crmField === 'contact_state') { contactData.state = row[fileColumn]; }
+            else if (crmField === 'contact_country') { contactData.country = row[fileColumn]; }
+            else if (crmField === 'contact_postal_code') { contactData.postal_code = row[fileColumn]; }
+            else {
+              contactData[crmField] = row[fileColumn];
             }
           }
-          // Look up or create department
-          if (contactData.department) {
-            const [departments] = await pool.execute('SELECT id FROM departments WHERE name = ?', [contactData.department]);
-            if (departments.length > 0) {
-              department_id = departments[0].id;
-            } else {
-              const [result] = await pool.execute('INSERT INTO departments (name) VALUES (?)', [contactData.department]);
-              department_id = result.insertId;
-            }
-          }
-          contactData.custom_fields = Object.keys(customFields).length > 0 ? JSON.stringify(customFields) : null;
-          // Insert contact
-          const [result] = await pool.execute(
-            `INSERT INTO contacts (
-              first_name, last_name, title, seniority, department_id, company_id, owner_id, stage, lists, last_contacted, person_linkedin_url, contact_owner, address, city, state, country, postal_code, custom_fields
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
-            [
-              contactData.first_name || null,
-              contactData.last_name || null,
-              contactData.title || null,
-              contactData.seniority || null,
-              department_id || null,
-              company_id || null,
-              contactData.owner_id || null,
-              contactData.stage || null,
-              contactData.lists || null,
-              contactData.last_contacted || null,
-              contactData.person_linkedin_url || null,
-              contactData.contact_owner || null,
-              contactData.address || null,
-              contactData.city || null,
-              contactData.state || null,
-              contactData.country || null,
-              contactData.postal_code || null,
-              contactData.custom_fields
-            ]
-          );
-          const contactId = result.insertId;
-          // Insert emails
-          for (const emailObj of emails) {
-            await pool.execute(
-              `INSERT INTO emails (contact_id, email, type, status, source, confidence, catch_all_status, last_verified_at, is_primary, unsubscribe)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
-              [
-                contactId,
-                emailObj.email,
-                emailObj.type || 'primary',
-                emailObj.status || null,
-                emailObj.source || null,
-                emailObj.confidence || null,
-                emailObj.catch_all_status || null,
-                emailObj.last_verified_at || null,
-                emailObj.is_primary || false,
-                emailObj.unsubscribe || false
-              ]
-            );
-          }
-          // Insert phones (company_phone is NOT included)
-          for (const phoneObj of phones) {
-            await pool.execute(
-              `INSERT INTO phones (contact_id, phone, type)
-               VALUES (?, ?, ?)` ,
-              [
-                contactId,
-                phoneObj.phone,
-                phoneObj.type || 'work'
-              ]
-            );
-          }
-          totalImported++;
-        } catch (error) {
-          errors.push(`File ${fileIndex + 1}, Row ${i + 1}: ${error.message}`);
+        });
+
+        // Normalize fields
+        Object.keys(contactData).forEach(k => { contactData[k] = normalizeEmpty(contactData[k]); });
+        Object.keys(customFields).forEach(k => { customFields[k] = normalizeEmpty(customFields[k]); });
+        emails.forEach(e => { e.email = normalizeEmpty(e.email); });
+        phones.forEach(p => { p.phone = normalizeEmpty(p.phone); });
+
+        // Get company and department IDs from cache
+        if (contactData.company_name) {
+          company_id = companyCache.get(contactData.company_name) || null;
         }
+        if (contactData.department) {
+          department_id = departmentCache.get(contactData.department) || null;
+        }
+
+        // Prepare contact data
+        contactData.custom_fields = Object.keys(customFields).length > 0 ? JSON.stringify(customFields) : null;
+        
+        const contactValues = [
+          contactData.first_name || null,
+          contactData.last_name || null,
+          contactData.title || null,
+          contactData.seniority || null,
+          department_id || null,
+          company_id || null,
+          contactData.owner_id || null,
+          contactData.stage || null,
+          contactData.lists || null,
+          contactData.last_contacted || null,
+          contactData.person_linkedin_url || null,
+          contactData.contact_owner || null,
+          contactData.address || null,
+          contactData.city || null,
+          contactData.state || null,
+          contactData.country || null,
+          contactData.postal_code || null,
+          contactData.custom_fields
+        ];
+
+        contactBatches.push(contactValues);
+        
+        // Store emails and phones
+        if (emails.length > 0) {
+          emailBatches.push({ emails, batchIndex: contactBatches.length - 1 });
+        }
+        if (phones.length > 0) {
+          phoneBatches.push({ phones, batchIndex: contactBatches.length - 1 });
+        }
+
+        totalImported++;
+
+        // Log progress for large imports
+        if (totalImported % 10000 === 0) {
+          console.log(`Processed ${totalImported} contacts...`);
+        }
+
+        // Process batches when we reach the batch size
+        if (contactBatches.length >= BATCH_SIZE) {
+          await processBatchesFast(contactBatches, emailBatches, phoneBatches);
+          contactBatches.length = 0;
+          emailBatches.length = 0;
+          phoneBatches.length = 0;
+        }
+
+      } catch (error) {
+        errors.push(`File ${fileIndex + 1}, Row ${i + 1}: ${error.message}`);
+      }
     }
+
+    // Process remaining batches
+    if (contactBatches.length > 0) {
+      await processBatchesFast(contactBatches, emailBatches, phoneBatches);
+    }
+
+    console.log(`Import completed: ${totalImported} contacts imported`);
+
     res.json({
       message: 'Import completed',
       total_imported: totalImported,
       errors: errors.length > 0 ? errors : null
     });
+
   } catch (error) {
     console.error('Import contacts error:', error);
     res.status(500).json({ error: 'Failed to import contacts' });
   }
 };
+
+// Ultra-fast batch processing function
+async function processBatchesFast(contactBatches, emailBatches, phoneBatches) {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    // Batch insert contacts using multi-value INSERT
+    if (contactBatches.length > 0) {
+      const contactSql = `INSERT INTO contacts (
+        first_name, last_name, title, seniority, department_id, company_id, owner_id, stage, lists, last_contacted, person_linkedin_url, contact_owner, address, city, state, country, postal_code, custom_fields
+      ) VALUES ${contactBatches.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`;
+      
+      const flatValues = contactBatches.flat();
+      await connection.execute(contactSql, flatValues);
+    }
+
+    // Get the range of contact IDs that were just inserted
+    const [lastInsertResult] = await connection.execute('SELECT LAST_INSERT_ID() as id');
+    const lastInsertId = lastInsertResult[0].id;
+    const firstContactId = lastInsertId - contactBatches.length + 1;
+
+    // Batch insert emails using multi-value INSERT
+    if (emailBatches.length > 0) {
+      const emailValues = [];
+      const emailSql = `INSERT INTO emails (contact_id, email, type) VALUES `;
+      
+      for (const batch of emailBatches) {
+        const contactId = firstContactId + batch.batchIndex;
+        for (const emailObj of batch.emails) {
+          emailValues.push([contactId, emailObj.email, emailObj.type || 'primary']);
+        }
+      }
+      
+      if (emailValues.length > 0) {
+        const emailInsertSql = emailSql + emailValues.map(() => '(?, ?, ?)').join(', ');
+        const flatEmailValues = emailValues.flat();
+        await connection.execute(emailInsertSql, flatEmailValues);
+      }
+    }
+
+    // Batch insert phones using multi-value INSERT
+    if (phoneBatches.length > 0) {
+      const phoneValues = [];
+      const phoneSql = `INSERT INTO phones (contact_id, phone, type) VALUES `;
+      
+      for (const batch of phoneBatches) {
+        const contactId = firstContactId + batch.batchIndex;
+        for (const phoneObj of batch.phones) {
+          phoneValues.push([contactId, phoneObj.phone, phoneObj.type || 'work']);
+        }
+      }
+      
+      if (phoneValues.length > 0) {
+        const phoneInsertSql = phoneSql + phoneValues.map(() => '(?, ?, ?)').join(', ');
+        const flatPhoneValues = phoneValues.flat();
+        await connection.execute(phoneInsertSql, flatPhoneValues);
+      }
+    }
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
 
 // Dashboard stats endpoint
 export const getDashboardStats = async (req, res) => {
@@ -1049,10 +1112,8 @@ export const markDuplicates = async (req, res) => {
     // 2. Load all emails (contact_id, email)
     const [emails] = await connection.query('SELECT contact_id, email FROM emails');
 
-    // 3. Build graph: node = contact id, edge if duplicate by email or by (first+last+company)
-    // Build adjacency list
-    const adj = {};
-    contacts.forEach(c => { adj[c.id] = new Set(); });
+    // 3. Find duplicate groups by direct relationships only
+    const duplicateGroups = [];
 
     // 3a. Duplicate by email (skip empty/null emails)
     const emailMap = {};
@@ -1061,73 +1122,77 @@ export const markDuplicates = async (req, res) => {
       if (!emailMap[e.email]) emailMap[e.email] = [];
       emailMap[e.email].push(e.contact_id);
     }
-    for (const ids of Object.values(emailMap)) {
-      if (ids.length > 1) {
-        for (let i = 0; i < ids.length; i++) {
-          for (let j = i + 1; j < ids.length; j++) {
-            adj[ids[i]].add(ids[j]);
-            adj[ids[j]].add(ids[i]);
-          }
-        }
+    
+    // Create groups for emails with multiple contacts
+    for (const [email, contactIds] of Object.entries(emailMap)) {
+      if (contactIds.length > 1) {
+        duplicateGroups.push(contactIds);
       }
     }
 
     // 3b. Duplicate by first+last+company (skip if first or last name is empty/null)
     const nameCompanyMap = {};
     for (const c of contacts) {
-      if (!c.first_name || !c.last_name) continue; // skip if missing
-      const key = `${(c.first_name||'').toLowerCase()}|${(c.last_name||'').toLowerCase()}|${c.company_id||''}`;
+      if (!c.first_name || !c.last_name || !c.company_id) continue; // skip if missing
+      const key = `${(c.first_name||'').toLowerCase()}|${(c.last_name||'').toLowerCase()}|${c.company_id}`;
       if (!nameCompanyMap[key]) nameCompanyMap[key] = [];
       nameCompanyMap[key].push(c.id);
     }
-    for (const ids of Object.values(nameCompanyMap)) {
-      if (ids.length > 1) {
-        for (let i = 0; i < ids.length; i++) {
-          for (let j = i + 1; j < ids.length; j++) {
-            adj[ids[i]].add(ids[j]);
-            adj[ids[j]].add(ids[i]);
-          }
-        }
+    
+    // Create groups for name+company combinations with multiple contacts
+    for (const [key, contactIds] of Object.entries(nameCompanyMap)) {
+      if (contactIds.length > 1) {
+        duplicateGroups.push(contactIds);
       }
     }
 
-    // 4. Find connected components (BFS)
-    const visited = new Set();
-    const groups = [];
-    for (const id of Object.keys(adj)) {
-      if (!visited.has(Number(id))) {
-        const queue = [Number(id)];
-        const group = [];
-        visited.add(Number(id));
-        while (queue.length > 0) {
-          const curr = queue.shift();
-          group.push(curr);
-          for (const neighbor of adj[curr]) {
-            if (!visited.has(neighbor)) {
-              visited.add(neighbor);
-              queue.push(neighbor);
-            }
-          }
+    // 4. Merge overlapping groups (if contacts appear in multiple groups, combine them)
+    const mergedGroups = [];
+
+    for (let i = 0; i < duplicateGroups.length; i++) {
+      const group = duplicateGroups[i];
+      let merged = false;
+
+      // Check if any contact in this group is already in a merged group
+      for (let j = 0; j < mergedGroups.length; j++) {
+        const existingGroup = mergedGroups[j];
+        const hasOverlap = group.some(contactId => existingGroup.includes(contactId));
+        
+        if (hasOverlap) {
+          // Merge this group into the existing one
+          const uniqueContacts = [...new Set([...existingGroup, ...group])];
+          mergedGroups[j] = uniqueContacts;
+          merged = true;
+          break;
         }
-        if (group.length > 1) groups.push(group);
+      }
+
+      if (!merged) {
+        mergedGroups.push([...group]);
       }
     }
 
     // 5. For each group, pick master (lowest id), update others
     let updatedCount = 0;
-    for (const group of groups) {
-      const masterId = Math.min(...group);
-      const dupes = group.filter(id => id !== masterId);
-      if (dupes.length > 0) {
-        await connection.query(
-          `UPDATE contacts SET is_duplicate = 1, duplicate_of = ? WHERE id IN (${dupes.map(() => '?').join(',')})`,
-          [masterId, ...dupes]
-        );
-        updatedCount += dupes.length;
+    for (const group of mergedGroups) {
+      if (group.length > 1) {
+        const masterId = Math.min(...group);
+        const dupes = group.filter(id => id !== masterId);
+        if (dupes.length > 0) {
+          await connection.query(
+            `UPDATE contacts SET is_duplicate = 1, duplicate_of = ? WHERE id IN (${dupes.map(() => '?').join(',')})`,
+            [masterId, ...dupes]
+          );
+          updatedCount += dupes.length;
+        }
       }
     }
 
-    res.json({ message: `Duplicates marked using graph-based connected components (empty values skipped)`, groups: groups.length, duplicates: updatedCount });
+    res.json({ 
+      message: `Duplicates marked using direct relationships only (empty values skipped)`, 
+      groups: mergedGroups.length, 
+      duplicates: updatedCount 
+    });
   } catch (error) {
     console.error('Error marking duplicates:', error);
     res.status(500).json({ error: 'Failed to mark duplicates', details: error.message });
@@ -1136,35 +1201,72 @@ export const markDuplicates = async (req, res) => {
   }
 };
 
-// List duplicate groups API
+// List duplicate groups API with pagination
 export const getDuplicateGroups = async (req, res) => {
   try {
-    // 1. Get all duplicate groups (where is_duplicate = 1 and duplicate_of is not null)
-    const [dupeRows] = await pool.query(
-      `SELECT * FROM contacts WHERE is_duplicate = 1 AND duplicate_of IS NOT NULL`
-    );
-    // 2. Group by duplicate_of
-    const groups = {};
-    for (const row of dupeRows) {
-      if (!groups[row.duplicate_of]) groups[row.duplicate_of] = [];
-      groups[row.duplicate_of].push(row);
-    }
-    // 3. Fetch master contacts for each group
-    const masterIds = Object.keys(groups);
-    let masters = [];
+    // Pagination params
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const offset = (page - 1) * limit;
+
+    // 1. Get all duplicate groups with their masters
+    const [duplicateGroups] = await pool.query(`
+      SELECT 
+        duplicate_of as master_id,
+        COUNT(*) as duplicate_count
+      FROM contacts 
+      WHERE is_duplicate = 1 AND duplicate_of IS NOT NULL 
+      GROUP BY duplicate_of 
+      HAVING COUNT(*) > 0
+      ORDER BY duplicate_of
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+    `);
+
+    // 2. Get total count
+    const [countResult] = await pool.query(`
+      SELECT COUNT(*) as total FROM (
+        SELECT duplicate_of
+        FROM contacts 
+        WHERE is_duplicate = 1 AND duplicate_of IS NOT NULL 
+        GROUP BY duplicate_of 
+        HAVING COUNT(*) > 0
+      ) as dupe_groups
+    `);
+    const total = countResult[0].total;
+
+    // 3. Get all contacts for these groups
+    const masterIds = duplicateGroups.map(g => g.master_id);
+    let allContacts = [];
     if (masterIds.length > 0) {
-      const [masterRows] = await pool.query(
-        `SELECT * FROM contacts WHERE id IN (${masterIds.map(() => '?').join(',')})`,
-        masterIds
-      );
-      masters = masterRows;
+      const [contacts] = await pool.query(`
+        SELECT * FROM contacts 
+        WHERE id IN (${masterIds.map(() => '?').join(',')}) 
+        OR (is_duplicate = 1 AND duplicate_of IN (${masterIds.map(() => '?').join(',')}))
+      `, [...masterIds, ...masterIds]);
+      allContacts = contacts;
     }
-    // 4. Collect all contact IDs (masters + duplicates)
-    const allContactIds = [
-      ...masters.map(m => m.id),
-      ...dupeRows.map(d => d.id)
-    ];
-    // 5. Fetch all emails and phones for these contacts
+
+    // 4. Group contacts by their master
+    const groups = {};
+    for (const contact of allContacts) {
+      const masterId = contact.is_duplicate ? contact.duplicate_of : contact.id;
+      if (!groups[masterId]) {
+        groups[masterId] = {
+          master: null,
+          duplicates: []
+        };
+      }
+      if (contact.is_duplicate) {
+        groups[masterId].duplicates.push(contact);
+      } else {
+        groups[masterId].master = contact;
+      }
+    }
+
+    // 5. Collect all contact IDs for fetching related data
+    const allContactIds = allContacts.map(c => c.id);
+
+    // 6. Fetch all emails and phones for these contacts
     let emailsByContact = {}, phonesByContact = {};
     if (allContactIds.length > 0) {
       const [emails] = await pool.query(
@@ -1184,11 +1286,9 @@ export const getDuplicateGroups = async (req, res) => {
         phonesByContact[phone.contact_id].push(phone);
       });
     }
-    // 6. Fetch company and department info for all involved company_ids and department_ids
-    const allCompanyIds = Array.from(new Set([
-      ...masters.map(m => m.company_id).filter(Boolean),
-      ...dupeRows.map(d => d.company_id).filter(Boolean)
-    ]));
+
+    // 7. Fetch company and department info
+    const allCompanyIds = Array.from(new Set(allContacts.map(c => c.company_id).filter(Boolean)));
     let companyMap = {};
     if (allCompanyIds.length > 0) {
       const [companies] = await pool.query(
@@ -1197,10 +1297,7 @@ export const getDuplicateGroups = async (req, res) => {
       );
       companies.forEach(c => { companyMap[c.id] = c; });
     }
-    const allDepartmentIds = Array.from(new Set([
-      ...masters.map(m => m.department_id).filter(Boolean),
-      ...dupeRows.map(d => d.department_id).filter(Boolean)
-    ]));
+    const allDepartmentIds = Array.from(new Set(allContacts.map(c => c.department_id).filter(Boolean)));
     let departmentMap = {};
     if (allDepartmentIds.length > 0) {
       const [departments] = await pool.query(
@@ -1209,7 +1306,8 @@ export const getDuplicateGroups = async (req, res) => {
       );
       departments.forEach(d => { departmentMap[d.id] = d; });
     }
-    // 7. Attach emails, phones, company, and department to each contact
+
+    // 8. Attach emails, phones, company, and department to each contact
     function enrichContact(c) {
       let customFields = c.custom_fields;
       if (typeof customFields === 'string') {
@@ -1237,23 +1335,32 @@ export const getDuplicateGroups = async (req, res) => {
         country: c.country,
         postal_code: c.postal_code,
         custom_fields: customFields,
-        emails: emailsByContact[c.id] || [],
-        phones: phonesByContact[c.id] || [],
+        emails: filterNonEmpty(emailsByContact[c.id], 'email'),
+        phones: filterNonEmpty(phonesByContact[c.id], 'phone'),
         created_at: c.created_at,
         updated_at: c.updated_at,
         is_duplicate: c.is_duplicate,
         duplicate_of: c.duplicate_of
       };
     }
-    // 8. Build response: [{ master, duplicates: [...] }, ...]
-    const result = masterIds.map(masterId => {
-      const master = enrichContact(masters.find(m => m.id == masterId));
-      return {
-        master,
-        duplicates: (groups[masterId] || []).map(enrichContact)
-      };
+
+    // 9. Build response: [{ master, duplicates: [...] }, ...]
+    const result = Object.values(groups)
+      .filter(group => group.master && group.duplicates.length > 0)
+      .map(group => ({
+        master: enrichContact(group.master),
+        duplicates: group.duplicates.map(enrichContact)
+      }));
+
+    res.json({ 
+      duplicate_groups: result,
+      pagination: {
+        total,
+        total_pages: Math.ceil(total / limit),
+        current_page: page,
+        per_page: limit
+      }
     });
-    res.json({ duplicate_groups: result });
   } catch (error) {
     console.error('Get duplicate groups error:', error);
     res.status(500).json({ error: 'Failed to fetch duplicate groups', details: error.message });
@@ -1474,9 +1581,25 @@ export const savePredictedEmail = async (req, res) => {
   }
 };
 
-// Get all contacts missing an email (no email row or email is NULL/empty)
+// Get all contacts missing an email (no email row or email is NULL/empty) with pagination
 export const getContactsMissingEmails = async (req, res) => {
   try {
+    // Pagination params
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    const [countResult] = await pool.execute(`
+      SELECT COUNT(DISTINCT c.id) as total
+      FROM contacts c
+      LEFT JOIN emails e ON c.id = e.contact_id AND (e.email IS NOT NULL AND TRIM(e.email) <> '')
+      WHERE e.id IS NULL
+         OR e.email IS NULL
+         OR TRIM(e.email) = ''
+    `);
+    const total = countResult[0].total;
+
     // Find contacts with no email row or only empty/null emails
     const [contacts] = await pool.execute(`
       SELECT c.id, c.first_name, c.last_name, c.company_id, co.name as company_name
@@ -1487,8 +1610,19 @@ export const getContactsMissingEmails = async (req, res) => {
          OR e.email IS NULL
          OR TRIM(e.email) = ''
       GROUP BY c.id
+      ORDER BY c.id DESC
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
     `);
-    res.json({ contacts });
+
+    res.json({ 
+      contacts,
+      pagination: {
+        total,
+        total_pages: Math.ceil(total / limit),
+        current_page: page,
+        per_page: limit
+      }
+    });
   } catch (err) {
     console.error('Error fetching contacts missing emails:', err);
     res.status(500).json({ error: 'Failed to fetch contacts missing emails' });
@@ -1559,3 +1693,269 @@ export const getContactFilterOptions = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch filter options' });
   }
 };
+
+export const importContactsFromFiles = async (req, res) => {
+  try {
+    const { files, mappings } = req.body;
+    if (!files || !Array.isArray(files) || !mappings || !Array.isArray(mappings)) {
+      return res.status(400).json({ error: 'Invalid request format' });
+    }
+
+    let totalImported = 0;
+    const errors = [];
+    const allRows = [];
+    
+    // Import the parsing functions from importController
+    const { parseCSVFile, parseExcelFile } = await import('../controllers/importController.js');
+    
+    // Process each file
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      const file = files[fileIndex];
+      const mapping = mappings[fileIndex];
+      
+      if (!file.path || !mapping) continue;
+      
+      try {
+        console.log(`Processing file: ${file.filename}`);
+        
+        // Parse the file
+        const ext = path.extname(file.filename).toLowerCase();
+        let parsedData;
+        
+        if (ext === '.csv') {
+          parsedData = await parseCSVFile(file.path);
+        } else if (ext === '.xlsx' || ext === '.xls') {
+          parsedData = await parseExcelFile(file.path);
+        } else {
+          throw new Error('Unsupported file type');
+        }
+        
+        // Add rows to processing queue
+        parsedData.data.forEach(row => {
+          allRows.push({ row, mapping, fileIndex });
+        });
+        
+        console.log(`Added ${parsedData.data.length} rows from ${file.filename}`);
+        
+      } catch (error) {
+        errors.push(`File ${file.filename}: ${error.message}`);
+      }
+    }
+
+    console.log(`Starting import of ${allRows.length} rows`);
+
+    // Pre-cache all companies and departments to avoid repeated lookups
+    const companyCache = new Map();
+    const departmentCache = new Map();
+    
+    // Get all existing companies and departments in one query
+    const [existingCompanies] = await pool.execute('SELECT id, name FROM companies');
+    existingCompanies.forEach(company => {
+      companyCache.set(company.name, company.id);
+    });
+
+    const [existingDepartments] = await pool.execute('SELECT id, name FROM departments');
+    existingDepartments.forEach(dept => {
+      departmentCache.set(dept.name, dept.id);
+    });
+
+    // Collect all unique companies and departments from the import data
+    const newCompanies = new Set();
+    const newDepartments = new Set();
+    
+    for (const { row, mapping } of allRows) {
+      Object.entries(mapping).forEach(([fileColumn, crmField]) => {
+        if (crmField === 'company_name' && row[fileColumn]) {
+          const companyName = normalizeEmpty(row[fileColumn]);
+          if (companyName && !companyCache.has(companyName)) {
+            newCompanies.add(companyName);
+          }
+        } else if (crmField === 'department' && row[fileColumn]) {
+          const deptName = normalizeEmpty(row[fileColumn]);
+          if (deptName && !departmentCache.has(deptName)) {
+            newDepartments.add(deptName);
+          }
+        }
+      });
+    }
+
+    // Batch insert new companies
+    if (newCompanies.size > 0) {
+      const companyValues = Array.from(newCompanies).map(name => [name]);
+      const companySql = 'INSERT INTO companies (name) VALUES (?)';
+      for (const values of companyValues) {
+        const [result] = await pool.execute(companySql, values);
+        companyCache.set(values[0], result.insertId);
+      }
+      console.log(`Created ${newCompanies.size} new companies`);
+    }
+
+    // Batch insert new departments
+    if (newDepartments.size > 0) {
+      const deptValues = Array.from(newDepartments).map(name => [name]);
+      const deptSql = 'INSERT INTO departments (name) VALUES (?)';
+      for (const values of deptValues) {
+        const [result] = await pool.execute(deptSql, values);
+        departmentCache.set(values[0], result.insertId);
+      }
+      console.log(`Created ${newDepartments.size} new departments`);
+    }
+
+    // Process contacts in batches - UNLIMITED VERSION
+    const BATCH_SIZE = 1000; // Larger batch size for unlimited processing
+    const contactBatches = [];
+    const emailBatches = [];
+    const phoneBatches = [];
+
+    for (let i = 0; i < allRows.length; i++) {
+      const { row, mapping, fileIndex } = allRows[i];
+      
+      try {
+        const contactData = {};
+        const customFields = {};
+        const emails = [];
+        const phones = [];
+        let company_id = null;
+        let department_id = null;
+
+        // Process mapping
+        Object.entries(mapping).forEach(([fileColumn, crmField]) => {
+          if (crmField && crmField !== '-- Ignore --' && row[fileColumn] !== undefined) {
+            if (crmField.startsWith('custom_fields.')) {
+              const customFieldName = crmField.replace('custom_fields.', '');
+              customFields[customFieldName] = row[fileColumn];
+            } else if (crmField === 'email' || crmField === 'secondary_email' || crmField === 'tertiary_email' || crmField === 'personal_email') {
+              const emailObj = { email: row[fileColumn], type: crmField === 'email' ? 'primary' : crmField.replace('_email', '') };
+              emails.push(emailObj);
+            } else if (crmField.endsWith('_phone') && crmField !== 'company_phone') {
+              phones.push({ phone: row[fileColumn], type: crmField.replace('_phone', '') });
+            } else if (crmField === 'company_name') {
+              contactData.company_name = row[fileColumn];
+            } else if (crmField === 'department') {
+              contactData.department = row[fileColumn];
+            } else if (crmField === 'contact_address') { contactData.address = row[fileColumn]; }
+            else if (crmField === 'contact_city') { contactData.city = row[fileColumn]; }
+            else if (crmField === 'contact_state') { contactData.state = row[fileColumn]; }
+            else if (crmField === 'contact_country') { contactData.country = row[fileColumn]; }
+            else if (crmField === 'contact_postal_code') { contactData.postal_code = row[fileColumn]; }
+            else {
+              contactData[crmField] = row[fileColumn];
+            }
+          }
+        });
+
+        // Normalize fields
+        Object.keys(contactData).forEach(k => { contactData[k] = normalizeEmpty(contactData[k]); });
+        Object.keys(customFields).forEach(k => { customFields[k] = normalizeEmpty(customFields[k]); });
+        emails.forEach(e => { e.email = normalizeEmpty(e.email); });
+        phones.forEach(p => { p.phone = normalizeEmpty(p.phone); });
+
+        // Get company and department IDs from cache
+        if (contactData.company_name) {
+          company_id = companyCache.get(contactData.company_name) || null;
+        }
+        if (contactData.department) {
+          department_id = departmentCache.get(contactData.department) || null;
+        }
+
+        // Prepare contact data
+        contactData.custom_fields = Object.keys(customFields).length > 0 ? JSON.stringify(customFields) : null;
+        
+        const contactValues = [
+          contactData.first_name || null,
+          contactData.last_name || null,
+          contactData.title || null,
+          contactData.seniority || null,
+          department_id || null,
+          company_id || null,
+          contactData.owner_id || null,
+          contactData.stage || null,
+          contactData.lists || null,
+          contactData.last_contacted || null,
+          contactData.person_linkedin_url || null,
+          contactData.contact_owner || null,
+          contactData.address || null,
+          contactData.city || null,
+          contactData.state || null,
+          contactData.country || null,
+          contactData.postal_code || null,
+          contactData.custom_fields
+        ];
+
+        contactBatches.push(contactValues);
+        
+        // Store emails and phones
+        if (emails.length > 0) {
+          emailBatches.push({ emails, batchIndex: contactBatches.length - 1 });
+        }
+        if (phones.length > 0) {
+          phoneBatches.push({ phones, batchIndex: contactBatches.length - 1 });
+        }
+
+        totalImported++;
+
+        // Log progress for large imports
+        if (totalImported % 10000 === 0) {
+          console.log(`Processed ${totalImported} contacts...`);
+        }
+
+        // Process batches when we reach the batch size
+        if (contactBatches.length >= BATCH_SIZE) {
+          await processBatchesFast(contactBatches, emailBatches, phoneBatches);
+          contactBatches.length = 0;
+          emailBatches.length = 0;
+          phoneBatches.length = 0;
+        }
+
+      } catch (error) {
+        errors.push(`File ${fileIndex + 1}, Row ${i + 1}: ${error.message}`);
+      }
+    }
+
+    // Process remaining batches
+    if (contactBatches.length > 0) {
+      await processBatchesFast(contactBatches, emailBatches, phoneBatches);
+    }
+
+    // Clean up uploaded files
+    for (const file of files) {
+      if (file.path && fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (error) {
+          console.error(`Error deleting file ${file.path}:`, error);
+        }
+      }
+    }
+
+    console.log(`Import completed: ${totalImported} contacts imported`);
+
+    res.json({
+      message: 'Import completed',
+      total_imported: totalImported,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error('Import error:', error);
+    res.status(500).json({ error: 'Import failed: ' + error.message });
+  }
+};
+
+// Clear all duplicate markings
+export const clearDuplicates = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.query('UPDATE contacts SET is_duplicate = 0, duplicate_of = NULL WHERE is_duplicate = 1 OR duplicate_of IS NOT NULL');
+    res.json({ message: 'All duplicate markings cleared successfully' });
+  } catch (error) {
+    console.error('Error clearing duplicates:', error);
+    res.status(500).json({ error: 'Failed to clear duplicates', details: error.message });
+  } finally {
+    connection.release();
+  }
+};
+
+// Helper to filter out empty/null emails/phones
+function filterNonEmpty(arr, field) {
+  return (Array.isArray(arr) ? arr : []).filter(e => e && typeof e[field] === 'string' && e[field].trim() !== '');
+}

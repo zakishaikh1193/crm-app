@@ -45,10 +45,13 @@ import { SyntheticEvent } from 'react';
 
 interface FileData {
   filename: string;
-  headers: string[];
-  preview: Record<string, any>[];
-  totalRows: number;
-  data: Record<string, any>[];
+  path?: string;
+  size?: number;
+  mimetype?: string;
+  headers?: string[];
+  preview?: Record<string, any>[];
+  totalRows?: number;
+  data?: Record<string, any>[];
   error?: string;
 }
 
@@ -73,6 +76,10 @@ const ImportDataPage: React.FC = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [importResults, setImportResults] = useState<any>(null);
+  const [importProgress, setImportProgress] = useState(0);
+  const [importStatus, setImportStatus] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState('');
 
   useEffect(() => {
     fetchContactFields();
@@ -93,6 +100,8 @@ const ImportDataPage: React.FC = () => {
 
     setLoading(true);
     setError('');
+    setUploadProgress(0);
+    setUploadStatus('Uploading files...');
 
     const formData = new FormData();
     Array.from(selectedFiles).forEach(file => {
@@ -100,25 +109,72 @@ const ImportDataPage: React.FC = () => {
     });
 
     try {
-      const response = await api.post('/import/upload', formData, {
+      // Step 1: Upload files (fast)
+      const uploadResponse = await api.post('/import/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        timeout: 0, // No timeout - unlimited upload time
+        onUploadProgress: (progressEvent: any) => {
+          if (progressEvent.total) {
+            const progress = (progressEvent.loaded / progressEvent.total) * 100;
+            setUploadProgress(progress);
+            setUploadStatus(`Uploading files... ${Math.round(progress)}%`);
+          }
+        },
       });
 
-      const uploadedFiles = response.data.files.filter((file: FileData) => !file.error);
-      const errorFiles = response.data.files.filter((file: FileData) => file.error);
+      setUploadProgress(100);
+      setUploadStatus('Getting file previews...');
+
+      // Step 2: Get previews for each file (separate requests)
+      const uploadedFiles = uploadResponse.data.files;
+      const fileDetails: FileData[] = [];
+
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const file = uploadedFiles[i];
+        setUploadStatus(`Getting preview for ${file.filename}...`);
+        
+        try {
+          const previewResponse = await api.post('/import/preview', {
+            filePath: file.path
+          });
+          
+          fileDetails.push({
+            filename: file.filename,
+            path: file.path,
+            size: file.size,
+            mimetype: file.mimetype,
+            headers: previewResponse.data.headers,
+            preview: previewResponse.data.preview,
+            totalRows: previewResponse.data.totalRows
+          });
+        } catch (previewError: any) {
+          console.error(`Error getting preview for ${file.filename}:`, previewError);
+          fileDetails.push({
+            filename: file.filename,
+            path: file.path,
+            size: file.size,
+            mimetype: file.mimetype,
+            error: previewError.response?.data?.error || 'Failed to get preview'
+          });
+        }
+      }
+
+      const errorFiles = fileDetails.filter((file: FileData) => file.error);
 
       if (errorFiles.length > 0) {
         setError(`Some files could not be processed: ${errorFiles.map((f: FileData) => f.filename).join(', ')}`);
       }
 
-      if (uploadedFiles.length > 0) {
-        setFiles(uploadedFiles);
+      const validFiles = fileDetails.filter((file: FileData) => !file.error && file.headers);
+      
+      if (validFiles.length > 0) {
+        setFiles(validFiles);
         // Initialize mappings for each file
-        const initialMappings = uploadedFiles.map((file: FileData) => {
+        const initialMappings = validFiles.map((file: FileData) => {
           const mapping: Record<string, string> = {};
-          file.headers.forEach(header => {
+          file.headers!.forEach(header => {
             mapping[header] = '-- Ignore --';
           });
           return mapping;
@@ -130,6 +186,8 @@ const ImportDataPage: React.FC = () => {
       setError(err.response?.data?.error || 'Failed to upload files');
     } finally {
       setLoading(false);
+      setUploadProgress(0);
+      setUploadStatus('');
     }
   };
 
@@ -142,14 +200,38 @@ const ImportDataPage: React.FC = () => {
   const handleImport = async () => {
     setLoading(true);
     setError('');
+    setImportProgress(0);
+    setImportStatus('Starting import...');
 
     try {
       const importData = {
-        files: files.map(file => file.data),
+        files: files.map(file => ({
+          filename: file.filename,
+          path: file.path
+        })),
         mappings: mappings,
       };
 
-      const response = await api.post('/contacts/import', importData);
+      // Calculate total rows for progress tracking
+      const totalRows = files.reduce((sum, file) => sum + (file.totalRows || 0), 0);
+      let processedRows = 0;
+
+      // Simulate progress updates with faster updates
+      const progressInterval = setInterval(() => {
+        if (processedRows < totalRows) {
+          processedRows += Math.floor(totalRows / 50); // Update every 2%
+          const progress = Math.min((processedRows / totalRows) * 100, 90); // Cap at 90% until complete
+          setImportProgress(progress);
+          setImportStatus(`Processing ${processedRows} of ${totalRows} rows...`);
+        }
+      }, 500); // Update every 500ms instead of 1000ms
+
+      const response = await api.post('/contacts/import-from-files', importData);
+      
+      clearInterval(progressInterval);
+      setImportProgress(100);
+      setImportStatus('Import completed!');
+      
       setImportResults(response.data);
       setSuccess(`Import completed! ${response.data.total_imported} contacts imported.`);
       setActiveStep(2);
@@ -157,6 +239,8 @@ const ImportDataPage: React.FC = () => {
       setError(err.response?.data?.error || 'Import failed');
     } finally {
       setLoading(false);
+      setImportProgress(0);
+      setImportStatus('');
     }
   };
 
@@ -170,7 +254,7 @@ const ImportDataPage: React.FC = () => {
     if (files.length > 0 && contactFields.length > 0 && mappings.length === 0) {
       const initialMappings = files.map((file: FileData) => {
         const mapping: Record<string, string> = {};
-        file.headers.forEach(header => {
+        file.headers?.forEach(header => {
           // Try to find a field with a similar name
           const match = contactFields.find(f =>
             f.value.toLowerCase() === header.toLowerCase() ||
@@ -363,8 +447,32 @@ const ImportDataPage: React.FC = () => {
                   Select one or more CSV files to import contacts into your CRM system.
                 </Typography>
                 
+                {loading && (
+                  <Box sx={{ width: '100%', maxWidth: 400, mb: 3 }}>
+                    <Typography variant="body2" sx={{ textAlign: 'center', mb: 1, color: '#64748b' }}>
+                      {uploadStatus}
+                    </Typography>
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={uploadProgress} 
+                      sx={{
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                        '& .MuiLinearProgress-bar': {
+                          borderRadius: 4,
+                          background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+                        },
+                      }}
+                    />
+                    <Typography variant="caption" sx={{ textAlign: 'center', mt: 1, color: '#64748b' }}>
+                      {Math.round(uploadProgress)}% complete
+                    </Typography>
+                  </Box>
+                )}
+                
                 <input
-                  accept=".csv"
+                  accept=".csv,.xlsx,.xls"
                   style={{ display: 'none' }}
                   id="file-upload"
                   multiple
@@ -452,7 +560,7 @@ const ImportDataPage: React.FC = () => {
                             {file.filename}
                           </Typography>
                           <Typography variant="body2" sx={{ color: '#64748b' }}>
-                            {file.totalRows} rows, {file.headers.length} columns
+                            {file.totalRows} rows, {file.headers?.length || 0} columns
                           </Typography>
                         </Box>
                         <Box display="flex" gap={1}>
@@ -490,7 +598,7 @@ const ImportDataPage: React.FC = () => {
                       </Box>
 
                       <Grid container spacing={2}>
-                        {file.headers.map((header, headerIndex) => (
+                        {file.headers?.map((header, headerIndex) => (
                           <Grid item xs={12} sm={6} md={4} key={headerIndex}>
                             <Box sx={{ mb: 2 }}>
                               <Typography variant="body2" sx={{ fontWeight: 600, mb: 1, color: '#1e293b' }}>
@@ -536,7 +644,30 @@ const ImportDataPage: React.FC = () => {
                 </Slide>
               ))}
 
-              <Box display="flex" justifyContent="center" mt={3}>
+              <Box display="flex" flexDirection="column" alignItems="center" mt={3} gap={2}>
+                {loading && (
+                  <Box sx={{ width: '100%', maxWidth: 400 }}>
+                    <Typography variant="body2" sx={{ textAlign: 'center', mb: 1, color: '#64748b' }}>
+                      {importStatus}
+                    </Typography>
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={importProgress} 
+                      sx={{
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        '& .MuiLinearProgress-bar': {
+                          borderRadius: 4,
+                          background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                        },
+                      }}
+                    />
+                    <Typography variant="caption" sx={{ textAlign: 'center', mt: 1, color: '#64748b' }}>
+                      {Math.round(importProgress)}% complete
+                    </Typography>
+                  </Box>
+                )}
                 <Button
                   variant="contained"
                   size="large"

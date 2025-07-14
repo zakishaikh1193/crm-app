@@ -1,5 +1,5 @@
 import express from 'express';
-import { upload, uploadFiles, getSampleData } from '../controllers/importController.js';
+import { upload, uploadFiles, getFilePreview, getSampleData } from '../controllers/importController.js';
 import { authenticateUserOrAdmin } from '../middlewares/auth.js';
 
 const router = express.Router();
@@ -8,6 +8,7 @@ const router = express.Router();
 router.use(authenticateUserOrAdmin);
 
 router.post('/upload', upload.any(), uploadFiles);
+router.post('/preview', getFilePreview);
 router.get('/sample/:filename', getSampleData);
 
 export default router;
