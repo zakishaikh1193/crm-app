@@ -1,12 +1,29 @@
 import React, { useState } from 'react';
-import { Box, Button, Typography, Alert, CircularProgress, Card, CardContent, Grid, Divider, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Pagination } from '@mui/material';
+import { 
+  Box, Button, Typography, Alert, CircularProgress, Card, CardContent, 
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, 
+  Paper, IconButton, Pagination, Stepper, Step, StepLabel, StepContent, 
+  Accordion, AccordionSummary, AccordionDetails, Tooltip, Divider, Grid
+} from '@mui/material';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import EmailIcon from '@mui/icons-material/Email';
 import DeleteIcon from '@mui/icons-material/Delete';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import { useNavigate } from 'react-router-dom';
 import api from '../config/axiosConfig';
 
+// Define the steps for the stepper
+const steps = [
+  'Find Duplicates',
+  'Review & Merge',
+  'Complete'
+];
+
 const DataUtilityPage: React.FC = () => {
+  const [activeStep, setActiveStep] = useState(0);
+  const [completed, setCompleted] = useState<{ [k: number]: boolean }>({});
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
@@ -20,7 +37,12 @@ const DataUtilityPage: React.FC = () => {
     current_page: 1,
     per_page: 20
   });
+  const [expanded, setExpanded] = useState<string | false>('panel1');
   const navigate = useNavigate();
+
+  const handleAccordionChange = (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
+    setExpanded(isExpanded ? panel : false);
+  };
 
   const handleCleanData = async () => {
     setLoading(true);
@@ -28,12 +50,14 @@ const DataUtilityPage: React.FC = () => {
     setError('');
     try {
       await api.post('/contacts/mark-duplicates');
-      setSuccess('Duplicates marked successfully!');
+      setSuccess('Duplicates found and marked successfully! Click "Review Duplicates" to view and merge them.');
       // Optionally, fetch duplicates to display
       const res = await api.get('/contacts?duplicates=1');
       setDuplicates(res.data.contacts || []);
+      setCompleted({...completed, 0: true});
+      setActiveStep(1);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to mark duplicates');
+      setError(err.response?.data?.error || 'Failed to find duplicates');
     } finally {
       setLoading(false);
     }
@@ -76,6 +100,8 @@ const DataUtilityPage: React.FC = () => {
         per_page: 10
       });
       setDuplicatePage(page);
+      setActiveStep(1);
+      setCompleted({...completed, 1: true});
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to fetch duplicate groups');
     } finally {
@@ -88,61 +114,190 @@ const DataUtilityPage: React.FC = () => {
   };
 
   return (
-    <Box sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
-      <Typography variant="h4" sx={{ fontWeight: 700, mb: 2 }}>
-        Data Utility
-      </Typography>
-      <Typography variant="body1" sx={{ mb: 3 }}>
-        Use this tool to clean your data by marking and merging duplicate contacts.
-      </Typography>
-      <Button
-        variant="contained"
-        color="primary"
-        onClick={handleCleanData}
-        disabled={loading}
-        sx={{ mb: 3, mr: 2 }}
+    <Box sx={{ p: { xs: 2, sm: 3, md: 4 }, maxWidth: 1200, mx: 'auto' }}>
+      <Box sx={{ mb: 4 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700, mb: 1 }}>
+          Data Cleaning Assistant
+        </Typography>
+        <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+          Follow these steps to identify and merge duplicate contacts in your database.
+        </Typography>
+        
+        {/* Stepper */}
+        <Box sx={{ mb: 4, maxWidth: 800, mx: 'auto' }}>
+          <Stepper activeStep={activeStep} orientation="horizontal" alternativeLabel>
+            {steps.map((label, index) => (
+              <Step key={label} completed={completed[index]}>
+                <StepLabel>{label}</StepLabel>
+              </Step>
+            ))}
+          </Stepper>
+        </Box>
+
+        {/* Main Actions Card */}
+        <Card sx={{ mb: 3, boxShadow: 3 }}>
+          <CardContent>
+            <Grid container spacing={3}>
+              {/* Step 1: Find Duplicates */}
+              <Grid item xs={12} md={4}>
+                <Box sx={{ p: 2, borderRight: { md: '1px solid #e0e0e0' }, height: '100%' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>1. Find Duplicates</Typography>
+                    <Tooltip title="Scans your contacts for potential duplicates" arrow>
+                      <HelpOutlineIcon fontSize="small" sx={{ ml: 1, color: 'text.secondary' }} />
+                    </Tooltip>
+                  </Box>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    onClick={handleCleanData}
+                    disabled={loading || completed[0]}
+                    fullWidth
+                    sx={{ mb: 1 }}
+                    startIcon={completed[0] ? <CheckCircleIcon /> : null}
+                  >
+                    {loading ? <CircularProgress size={24} /> : 
+                     completed[0] ? 'Duplicates Found' : 'Scan for Duplicates'}
+                  </Button>
+                  {completed[0] && (
+                    <Typography variant="caption" color="success.main" sx={{ display: 'flex', alignItems: 'center' }}>
+                      <CheckCircleIcon fontSize="small" sx={{ mr: 0.5 }} />
+                      Scan completed successfully
+                    </Typography>
+                  )}
+                </Box>
+              </Grid>
+              
+              {/* Step 2: Review & Merge */}
+              <Grid item xs={12} md={4}>
+                <Box sx={{ p: 2, borderRight: { md: '1px solid #e0e0e0' }, height: '100%' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>2. Review & Merge</Typography>
+                    <Tooltip title="Review potential duplicates and merge them" arrow>
+                      <HelpOutlineIcon fontSize="small" sx={{ ml: 1, color: 'text.secondary' }} />
+                    </Tooltip>
+                  </Box>
+                  <Button
+                    variant={completed[0] ? "contained" : "outlined"}
+                    color="secondary"
+                    onClick={() => handleFetchDuplicates(1)}
+                    disabled={loadingDuplicates || !completed[0]}
+                    fullWidth
+                    sx={{ mb: 1 }}
+                    startIcon={completed[1] ? <CheckCircleIcon /> : null}
+                  >
+                    {loadingDuplicates ? <CircularProgress size={24} /> : 
+                     completed[1] ? 'Review in Progress' : 'Review Duplicates'}
+                  </Button>
+                  {duplicatePagination.total > 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      Found {duplicatePagination.total} potential duplicate groups
+                    </Typography>
+                  )}
+                </Box>
+              </Grid>
+              
+              {/* Additional Tools */}
+              <Grid item xs={12} md={4}>
+                <Box sx={{ p: 2 }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>Additional Tools</Typography>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <Button
+                      variant="outlined"
+                      color="info"
+                      startIcon={<EmailIcon />}
+                      onClick={() => navigate('/missing-emails')}
+                      fullWidth
+                      sx={{ justifyContent: 'flex-start' }}
+                    >
+                      Find Missing Emails
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      color="warning"
+                      startIcon={<VisibilityIcon />}
+                      onClick={() => navigate('/merged-duplicates')}
+                      fullWidth
+                      sx={{ justifyContent: 'flex-start' }}
+                    >
+                      View Merged Records
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      startIcon={<DeleteIcon />}
+                      onClick={handleClearDuplicates}
+                      disabled={loading}
+                      fullWidth
+                      sx={{ justifyContent: 'flex-start' }}
+                    >
+                      Reset All Markings
+                    </Button>
+                  </Box>
+                </Box>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      </Box>
+      
+      {/* Status Messages */}
+      <Box sx={{ mb: 3 }}>
+        {success && (
+          <Alert 
+            severity="success" 
+            sx={{ mb: 2 }}
+            onClose={() => setSuccess('')}
+          >
+            {success}
+          </Alert>
+        )}
+        {error && (
+          <Alert 
+            severity="error" 
+            sx={{ mb: 2 }}
+            onClose={() => setError('')}
+          >
+            {error}
+          </Alert>
+        )}
+      </Box>
+
+      {/* Help Section */}
+      <Accordion 
+        expanded={expanded === 'panel1'} 
+        onChange={handleAccordionChange('panel1')}
+        sx={{ mb: 3, boxShadow: 2 }}
       >
-        {loading ? <CircularProgress size={24} /> : 'Clean Data (Mark Duplicates)'}
-      </Button>
-      <Button
-        variant="outlined"
-        color="secondary"
-        onClick={() => handleFetchDuplicates(1)}
-        disabled={loadingDuplicates}
-        sx={{ mb: 3, mr: 2 }}
-      >
-        {loadingDuplicates ? <CircularProgress size={24} /> : 'Review Duplicates'}
-      </Button>
-      <Button
-        variant="outlined"
-        color="info"
-        startIcon={<EmailIcon />}
-        onClick={() => navigate('/missing-emails')}
-        sx={{ mb: 3, mr: 2 }}
-      >
-        Missing Emails
-      </Button>
-      <Button
-        variant="outlined"
-        color="warning"
-        startIcon={<DeleteIcon />}
-        onClick={() => navigate('/merged-duplicates')}
-        sx={{ mb: 3 }}
-      >
-        Merged Duplicates
-      </Button>
-      <Button
-        variant="outlined"
-        color="error"
-        startIcon={<DeleteIcon />}
-        onClick={handleClearDuplicates}
-        disabled={loading}
-        sx={{ mb: 3, mr: 2 }}
-      >
-        {loading ? <CircularProgress size={24} /> : 'Clear All Duplicate Markings'}
-      </Button>
-      {success && <Alert severity="success" sx={{ mb: 2 }}>{success}</Alert>}
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography sx={{ fontWeight: 600 }}>How to use the Data Cleaning Assistant</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Step 1: Find Duplicates</Typography>
+            <Typography variant="body2" paragraph>
+              Click "Scan for Duplicates" to search your contacts for potential duplicates. This process may take a few moments depending on the size of your database.
+            </Typography>
+            
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Step 2: Review & Merge</Typography>
+            <Typography variant="body2" paragraph>
+              After scanning, click "Review Duplicates" to see potential matches. Review each group and use the "Merge Group" button to combine duplicate records.
+            </Typography>
+            
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Additional Tools</Typography>
+            <Typography variant="body2" paragraph>
+              - <strong>Find Missing Emails:</strong> Identify contacts without email addresses
+              - <strong>View Merged Records:</strong> See previously merged contacts
+              - <strong>Reset All Markings:</strong> Clear all duplicate markings and start over
+            </Typography>
+            
+            <Typography variant="caption" color="text.secondary">
+              Note: No changes are made to your data until you explicitly merge records.
+            </Typography>
+          </Box>
+        </AccordionDetails>
+      </Accordion>
+
       {/* Duplicates Review UI */}
       {duplicateGroups.length > 0 && (
         <Box>
