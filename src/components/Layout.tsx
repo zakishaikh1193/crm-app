@@ -95,15 +95,15 @@ const Layout: React.FC = () => {
       badge: null
     },
     {
-      text: 'Export Data',
-      icon: <Upload />, // <-- use Download icon
-      path: '/export',
-      badge: null
-    },
-    {
       text: 'Data Utility',
       icon: <Build />,
       path: '/data-utility',
+      badge: null
+    },
+    {
+      text: 'Export Data',
+      icon: <Upload />, // <-- use Download icon
+      path: '/export',
       badge: null
     },
   ];
