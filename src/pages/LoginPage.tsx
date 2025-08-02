@@ -317,7 +317,7 @@ const LoginPage: React.FC = () => {
                   </Button>
 
                   {/* Register Link */}
-                  <Box sx={{ textAlign: 'center' }}>
+                  {/* <Box sx={{ textAlign: 'center' }}>
                     <Typography
                       variant="body2"
                       sx={{
@@ -347,7 +347,7 @@ const LoginPage: React.FC = () => {
                         Create your account
                       </Typography>
                     </Link>
-                  </Box>
+                  </Box> */}
                 </Box>
               </Paper>
             </Fade>
