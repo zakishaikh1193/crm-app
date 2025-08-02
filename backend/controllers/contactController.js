@@ -1223,13 +1223,19 @@ export const getDashboardStats = async (req, res) => {
 export const markDuplicates = async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    // 0. Clear previous duplicate markings
-    await connection.query('UPDATE contacts SET is_duplicate = 0, duplicate_of = NULL WHERE is_duplicate = 1 OR duplicate_of IS NOT NULL');
+    // 0. Clear previous duplicate markings (only for non-merged duplicates)
+    await connection.query('UPDATE contacts SET is_duplicate = 0, duplicate_of = NULL WHERE is_duplicate = 1');
 
-    // 1. Load all contacts (id, first_name, last_name, company_id)
-    const [contacts] = await connection.query('SELECT id, first_name, last_name, company_id FROM contacts');
-    // 2. Load all emails (contact_id, email)
-    const [emails] = await connection.query('SELECT contact_id, email FROM emails');
+    // 1. Load all contacts (id, first_name, last_name, company_id) excluding already merged contacts
+    const [contacts] = await connection.query(
+      'SELECT id, first_name, last_name, company_id FROM contacts WHERE is_duplicate != 2'
+    );
+    
+    // 2. Load all emails (contact_id, email) for non-merged contacts
+    const [emails] = await connection.query(
+      'SELECT e.contact_id, e.email FROM emails e ' +
+      'JOIN contacts c ON e.contact_id = c.id ' +
+      'WHERE c.is_duplicate != 2');
 
     console.log(`Processing ${contacts.length} contacts and ${emails.length} emails`);
 
@@ -1309,10 +1315,13 @@ export const markDuplicates = async (req, res) => {
         const dupes = group.filter(id => id !== masterId);
         console.log(`Group: ${group.join(', ')} -> Master: ${masterId}, Duplicates: ${dupes.join(', ')}`);
         if (dupes.length > 0) {
-          await connection.query(
-            `UPDATE contacts SET is_duplicate = 1, duplicate_of = ? WHERE id IN (${dupes.map(() => '?').join(',')})`,
-            [masterId, ...dupes]
-          );
+          // Only update if the contact is not already marked as merged (is_duplicate != 2)
+        await connection.query(
+          `UPDATE contacts SET is_duplicate = 1, duplicate_of = ? 
+           WHERE id IN (${dupes.map(() => '?').join(',')}) 
+           AND is_duplicate != 2`,
+          [masterId, ...dupes]
+        );
           updatedCount += dupes.length;
         }
       }

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Card, CardContent, Button, CircularProgress, Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton } from '@mui/material';
+import { Box, Typography, Card, CardContent, Button, CircularProgress, Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Link } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
+import { Link as RouterLink } from 'react-router-dom';
 import api from '../config/axiosConfig';
 
 interface MergedContact {
@@ -91,7 +92,13 @@ const MergedDuplicatesPage: React.FC = () => {
                     <TableRow key={c.id}>
                       <TableCell>{[c.first_name, c.last_name].filter(Boolean).join(' ') || 'Unnamed'}</TableCell>
                       <TableCell>{c.company_name || '-'}</TableCell>
-                      <TableCell>{c.duplicate_of || '-'}</TableCell>
+                      <TableCell>
+                        {c.duplicate_of ? (
+                          <Link component={RouterLink} to={`/contacts/${c.duplicate_of}`}>
+                            {c.duplicate_of}
+                          </Link>
+                        ) : '-'}
+                      </TableCell>
                       <TableCell>{c.updated_at ? new Date(c.updated_at).toLocaleString() : '-'}</TableCell>
                       <TableCell align="center">
                         <IconButton
