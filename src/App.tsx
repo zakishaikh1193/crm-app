@@ -10,6 +10,7 @@ import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
 import ContactListPage from './pages/ContactListPage';
 import ContactDetailPage from './pages/ContactDetailPage';
+import ContactEditPage from './pages/ContactEditPage';
 import CreateContactPage from './pages/CreateContactPage';
 import CompanyListPage from './pages/CompanyListPage';
 import CreateCompanyPage from './pages/CreateCompanyPage';
@@ -272,6 +273,7 @@ function App() {
               <Route path="contacts/new" element={<CreateContactPage />} />
               <Route path="/contacts/merge" element={<ContactMergePage />} />              
               <Route path="contacts/:id" element={<ContactDetailPage />} />
+              <Route path="contacts/:id/edit" element={<ContactEditPage />} />
               <Route path="companies" element={<CompanyListPage />} />
               <Route path="companies/new" element={<CreateCompanyPage />} />
               <Route path="import" element={<ImportDataPage />} />

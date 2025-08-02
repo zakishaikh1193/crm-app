@@ -18,7 +18,11 @@ import {
   getContactsMissingEmails,
   deleteMergedDuplicates,
   getMergedDuplicates,
-  getContactFilterOptions
+  getContactFilterOptions,
+  getStatuses,
+  updateContactStatus,
+  bulkUpdateContactStatuses,
+  bulkUpdateStatusesFromCSV
 } from '../controllers/contactController.js';
 import { authenticateUserOrAdmin } from '../middlewares/auth.js';
 
@@ -36,15 +40,20 @@ router.get('/duplicates', getDuplicateGroups);
 router.get('/missing-emails', getContactsMissingEmails);
 router.get('/merged-duplicates', getMergedDuplicates);
 router.get('/filter-options', getContactFilterOptions);
-router.get('/predict-email/:id', predictEmail);
-router.post('/:id/save-predicted-email', savePredictedEmail);
-router.get('/:id', getContact);
+router.get('/statuses', getStatuses);
 router.post('/', createContact);
-router.put('/:id', updateContact);
-router.delete('/:id', deleteContact);
 router.post('/mark-duplicates', markDuplicates);
 router.post('/clear-duplicates', clearDuplicates);
 router.post('/merge', mergeContacts);
 router.post('/delete-duplicates', deleteMergedDuplicates);
+router.put('/bulk-status', bulkUpdateContactStatuses);
+router.post('/bulk-update-statuses-csv', bulkUpdateStatusesFromCSV);
+router.get('/predict-email/:id', predictEmail);
+router.post('/:id/save-predicted-email', savePredictedEmail);
+router.get('/:id', getContact);
+router.put('/:id', updateContact);
+router.delete('/:id', deleteContact);
+router.put('/:id/status', updateContactStatus);
+
 
 export default router;

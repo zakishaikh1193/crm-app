@@ -154,6 +154,12 @@ export async function initializeDatabase() {
     } catch (e) {
       if (!e.message.includes('Duplicate column')) throw e;
     }
+    // Add status column for contact management
+    try {
+      await connection.query(`ALTER TABLE contacts ADD COLUMN status VARCHAR(50) DEFAULT 'new'`);
+    } catch (e) {
+      if (!e.message.includes('Duplicate column')) throw e;
+    }
     // Add indexes for duplicate detection performance
     try {
       await connection.query(`CREATE INDEX idx_is_duplicate ON contacts (is_duplicate, duplicate_of)`);

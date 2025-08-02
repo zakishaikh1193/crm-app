@@ -3,7 +3,7 @@ import axios from 'axios';
 // Create axios instance with base configuration
 const api = axios.create({
   // baseURL: 'https://crm.bylinelms.com/api',
-  baseURL: 'https://crm.bylinelms.com/api',
+  baseURL: 'http://localhost:3001/api',
   timeout: 600000, // 10 minutes
   headers: {
     'Content-Type': 'application/json',

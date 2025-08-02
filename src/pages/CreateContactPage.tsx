@@ -45,6 +45,7 @@ const CreateContactPage: React.FC = () => {
     state: '',
     postal_code: '',
     country: '',
+    status: 'new',
     lead_source: '',
     lead_status: 'new',
     notes: '',
@@ -317,7 +318,29 @@ const CreateContactPage: React.FC = () => {
                       onChange={handleChange}
                     />
                   </Grid>
-                  <Grid item xs={12}>
+                  <Grid item xs={12} sm={6}>
+                    <FormControl fullWidth>
+                      <InputLabel>Status</InputLabel>
+                      <Select
+                        name="status"
+                        value={formData.status}
+                        label="Status"
+                        onChange={handleChange}
+                      >
+                        <MenuItem value="new">New</MenuItem>
+                        <MenuItem value="contacted">Contacted</MenuItem>
+                        <MenuItem value="qualified">Qualified</MenuItem>
+                        <MenuItem value="proposal">Proposal</MenuItem>
+                        <MenuItem value="negotiation">Negotiation</MenuItem>
+                        <MenuItem value="closed_won">Closed Won</MenuItem>
+                        <MenuItem value="closed_lost">Closed Lost</MenuItem>
+                        <MenuItem value="unsubscribed">Unsubscribed</MenuItem>
+                        <MenuItem value="wrong-email">Wrong Email</MenuItem>
+                        <MenuItem value="inactive">Inactive</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
                     <FormControl fullWidth>
                       <InputLabel>Lead Status</InputLabel>
                       <Select

@@ -31,6 +31,7 @@ interface Contact {
   };
   department?: { id: number; name: string } | null;
   tags?: string;
+  status?: string;
   lead_status?: string;
   created_at: string;
   updated_at: string;
@@ -161,8 +162,8 @@ const ContactDetailPage: React.FC = () => {
           </Typography>
           <Box display="flex" alignItems="center" gap={2}>
             <Chip
-              label={contact.lead_status || 'new'}
-              color={getStatusColor((contact.lead_status || 'new') as string) as any}
+              label={contact.status || 'new'}
+              color={getStatusColor((contact.status || 'new') as string) as any}
             />
             {contact.tags && (
               <Typography variant="body2" color="text.secondary">

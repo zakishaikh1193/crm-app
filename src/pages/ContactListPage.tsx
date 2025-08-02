@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import {
   Box,
   Button,
@@ -29,6 +30,10 @@ import {
   useTheme,
   useMediaQuery,
   Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import {
   Add,
@@ -43,6 +48,7 @@ import {
   Phone,
   Business,
   CalendarToday,
+  Update,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import api from '../config/axiosConfig';
@@ -79,6 +85,7 @@ interface Contact {
   company?: Company;
   department?: string;
   tags?: string;
+  status?: string;
   lead_status?: string;
   created_at: string;
 }
@@ -96,11 +103,18 @@ const ContactListPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalContacts, setTotalContacts] = useState(0);
+  const [statuses, setStatuses] = useState<Array<{value: string, label: string, color: string}>>([]);
+  const [loadingStatuses, setLoadingStatuses] = useState(false);
+  const [csvUploadOpen, setCsvUploadOpen] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvUploading, setCsvUploading] = useState(false);
+  const [csvResults, setCsvResults] = useState<any>(null);
 
   const itemsPerPage = 10;
 
   useEffect(() => {
     fetchContacts();
+    fetchStatuses();
   }, [currentPage, searchTerm, statusFilter]);
 
   const fetchContacts = async () => {
@@ -131,6 +145,18 @@ const ContactListPage: React.FC = () => {
     }
   };
 
+  const fetchStatuses = async () => {
+    try {
+      setLoadingStatuses(true);
+      const response = await api.get('/contacts/statuses');
+      setStatuses(response.data.statuses);
+    } catch (err: any) {
+      console.error('Failed to fetch statuses:', err);
+    } finally {
+      setLoadingStatuses(false);
+    }
+  };
+
   const handleDelete = async (id: number) => {
     if (window.confirm('Are you sure you want to delete this contact?')) {
       try {
@@ -152,18 +178,213 @@ const ContactListPage: React.FC = () => {
     setCurrentPage(1);
   };
 
+  const handleStatusChange = async (contactId: number, newStatus: string) => {
+    try {
+      await api.put(`/contacts/${contactId}/status`, { status: newStatus });
+      // Update the contact in the local state
+      setContacts(prevContacts => 
+        prevContacts.map(contact => 
+          contact.id === contactId 
+            ? { ...contact, status: newStatus }
+            : contact
+        )
+      );
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to update status');
+    }
+  };
+
+  const handleCsvFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    console.log('File selected:', file);
+    console.log('File type:', file?.type);
+    console.log('File name:', file?.name);
+    
+    if (file && (
+      file.type === 'text/csv' || 
+      file.name.endsWith('.csv') ||
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.name.endsWith('.xlsx') ||
+      file.type === 'application/vnd.ms-excel' ||
+      file.name.endsWith('.xls')
+    )) {
+      setCsvFile(file);
+      setError('');
+      console.log('File accepted (CSV or Excel)');
+    } else {
+      setError('Please select a valid CSV or Excel file (.csv, .xlsx, .xls)');
+      console.error('Invalid file type:', file?.type, 'or name:', file?.name);
+    }
+  };
+
+  const parseCSV = (csvText: string) => {
+    console.log('Parsing CSV text...');
+    const lines = csvText.split('\n');
+    console.log('Number of lines:', lines.length);
+    console.log('First line:', lines[0]);
+    
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    console.log('Headers:', headers);
+    
+    // Check if required columns exist
+    if (!headers.includes('email') || !headers.includes('status')) {
+      console.error('Missing required columns. Found headers:', headers);
+      throw new Error('CSV must contain "email" and "status" columns');
+    }
+
+    const data = [];
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim()) {
+        const values = lines[i].split(',').map(v => v.trim());
+        console.log(`Row ${i}:`, values);
+        const row: any = {};
+        headers.forEach((header, index) => {
+          row[header] = values[index] || '';
+        });
+        data.push(row);
+      }
+    }
+    console.log('Parsed data:', data);
+    return data;
+  };
+
+  const processFileData = async (fileData: any[]) => {
+    try {
+      console.log('Making API call...');
+      const response = await api.post('/contacts/bulk-update-statuses-csv', {
+        csvData: fileData
+      });
+      console.log('API response:', response.data);
+
+      setCsvResults(response.data.results);
+      setCsvUploadOpen(false);
+      setCsvFile(null);
+      
+      // Refresh contacts list
+      fetchContacts();
+    } catch (err: any) {
+      console.error('Error in API call:', err);
+      console.error('Error details:', err.response?.data);
+      setError(err.response?.data?.error || 'Failed to process file');
+    } finally {
+      setCsvUploading(false);
+    }
+  };
+
+  const handleCsvUpload = async () => {
+    if (!csvFile) return;
+
+    try {
+      setCsvUploading(true);
+      setError('');
+      console.log('Starting file upload process...');
+
+      let fileData: any[] = [];
+      
+      if (csvFile.name.endsWith('.csv')) {
+        // Handle CSV files
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            console.log('CSV file read successfully');
+            const csvText = e.target?.result as string;
+            console.log('CSV text length:', csvText.length);
+            console.log('CSV text preview:', csvText.substring(0, 200));
+            
+            fileData = parseCSV(csvText);
+            console.log('Parsed CSV data:', fileData);
+            console.log('Number of rows:', fileData.length);
+
+            await processFileData(fileData);
+          } catch (err: any) {
+            console.error('Error in CSV processing:', err);
+            setError(err.message || 'Failed to process CSV file');
+            setCsvUploading(false);
+          }
+        };
+
+        reader.onerror = (error) => {
+          console.error('FileReader error:', error);
+          setError('Failed to read CSV file');
+          setCsvUploading(false);
+        };
+
+        console.log('Starting to read CSV file...');
+        reader.readAsText(csvFile);
+      } else {
+        // Handle Excel files
+        try {
+          console.log('Processing Excel file...');
+          const arrayBuffer = await csvFile.arrayBuffer();
+          const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          
+          console.log('Excel data:', jsonData);
+          
+          if (jsonData.length < 2) {
+            throw new Error('Excel file must have at least a header row and one data row');
+          }
+          
+          const headers = (jsonData[0] as string[]).map(h => h.trim().toLowerCase());
+          console.log('Headers:', headers);
+          
+          if (!headers.includes('email') || !headers.includes('status')) {
+            throw new Error('Excel file must contain "email" and "status" columns');
+          }
+          
+          fileData = [];
+          for (let i = 1; i < jsonData.length; i++) {
+            const row = jsonData[i] as string[];
+            if (row.length > 0 && row.some(cell => cell && cell.toString().trim())) {
+              const rowData: any = {};
+              headers.forEach((header, index) => {
+                rowData[header] = row[index] || '';
+              });
+              fileData.push(rowData);
+            }
+          }
+          
+          console.log('Parsed Excel data:', fileData);
+          console.log('Number of rows:', fileData.length);
+          
+          await processFileData(fileData);
+        } catch (err: any) {
+          console.error('Error in Excel processing:', err);
+          setError(err.message || 'Failed to process Excel file');
+          setCsvUploading(false);
+        }
+      }
+    } catch (err: any) {
+      console.error('Error in handleCsvUpload:', err);
+      setError(err.message || 'Failed to read CSV file');
+      setCsvUploading(false);
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'new':
-        return 'default';
+        return 'primary';
       case 'contacted':
-        return 'info';
+        return 'warning';
       case 'qualified':
         return 'success';
-      case 'unqualified':
-        return 'error';
-      case 'customer':
+      case 'proposal':
+        return 'secondary';
+      case 'negotiation':
+        return 'info';
+      case 'closed_won':
         return 'success';
+      case 'closed_lost':
+        return 'error';
+      case 'unsubscribed':
+        return 'error';
+      case 'wrong-email':
+        return 'error';
+      case 'inactive':
+        return 'default';
       default:
         return 'default';
     }
@@ -248,6 +469,21 @@ const ContactListPage: React.FC = () => {
             >
               Add Contact
             </Button>
+            <Button
+              variant="outlined"
+              startIcon={<Update />}
+              onClick={() => setCsvUploadOpen(true)}
+              sx={{
+                borderColor: '#f59e0b',
+                color: '#f59e0b',
+                '&:hover': {
+                  borderColor: '#d97706',
+                  backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                },
+              }}
+            >
+              Upload Statuses
+            </Button>
           </Box>
         </Box>
       </Fade>
@@ -321,6 +557,7 @@ const ContactListPage: React.FC = () => {
                   onChange={handleStatusFilterChange}
                   label="Status"
                   startAdornment={<FilterList sx={{ mr: 1, color: '#64748b' }} />}
+                  disabled={loadingStatuses}
                   sx={{
                     borderRadius: 2,
                     '& .MuiOutlinedInput-notchedOutline': {
@@ -336,11 +573,11 @@ const ContactListPage: React.FC = () => {
                   }}
                 >
                   <MenuItem value="">All Status</MenuItem>
-                  <MenuItem value="new">New</MenuItem>
-                  <MenuItem value="contacted">Contacted</MenuItem>
-                  <MenuItem value="qualified">Qualified</MenuItem>
-                  <MenuItem value="unqualified">Unqualified</MenuItem>
-                  <MenuItem value="customer">Customer</MenuItem>
+                  {statuses.map((status) => (
+                    <MenuItem key={status.value} value={status.value}>
+                      {status.label}
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
             </Box>
@@ -440,12 +677,35 @@ const ContactListPage: React.FC = () => {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Chip
-                            label={contact.lead_status || 'new'}
-                            color={getStatusColor(contact.lead_status || 'new')}
-                            size="small"
-                            sx={{ fontWeight: 600 }}
-                          />
+                          <FormControl size="small" sx={{ minWidth: 120 }}>
+                            <Select
+                              value={contact.status || 'new'}
+                              onChange={(e) => handleStatusChange(contact.id, e.target.value)}
+                              size="small"
+                              sx={{
+                                '& .MuiOutlinedInput-notchedOutline': {
+                                  border: 'none',
+                                },
+                                '&:hover .MuiOutlinedInput-notchedOutline': {
+                                  border: 'none',
+                                },
+                                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                  border: 'none',
+                                },
+                              }}
+                            >
+                              {statuses.map((status) => (
+                                <MenuItem key={status.value} value={status.value}>
+                                  <Chip
+                                    label={status.label}
+                                    color={getStatusColor(status.value) as any}
+                                    size="small"
+                                    sx={{ fontWeight: 600 }}
+                                  />
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
                         </TableCell>
                         <TableCell>
                           <Box display="flex" alignItems="center" gap={1}>
@@ -532,10 +792,84 @@ const ContactListPage: React.FC = () => {
               }}
             />
           </Box>
-        </Grow>
+                </Grow>
       )}
+
+      {/* CSV Upload Dialog */}
+      <Dialog 
+        open={csvUploadOpen} 
+        onClose={() => setCsvUploadOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Upload Status Updates
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Upload a CSV or Excel file (.csv, .xlsx, .xls) with "email" and "status" columns to bulk update contact statuses.
+          </Typography>
+          
+          <Box sx={{ mb: 2 }}>
+            <input
+              accept=".csv,.xlsx,.xls"
+              style={{ display: 'none' }}
+              id="csv-file-input"
+              type="file"
+              onChange={handleCsvFileChange}
+            />
+            <label htmlFor="csv-file-input">
+              <Button
+                variant="outlined"
+                component="span"
+                startIcon={<Upload />}
+                fullWidth
+              >
+                {csvFile ? csvFile.name : 'Choose CSV File'}
+              </Button>
+            </label>
+          </Box>
+
+          {csvFile && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              File selected: {csvFile.name}
+            </Alert>
+          )}
+
+          {csvResults && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              <Typography variant="body2">
+                Upload completed!<br />
+                Total rows: {csvResults.total_rows}<br />
+                Updated: {csvResults.updated}<br />
+                Not found: {csvResults.not_found}
+              </Typography>
+              {csvResults.errors.length > 0 && (
+                <Box sx={{ mt: 1 }}>
+                  <Typography variant="body2" color="error">
+                    Errors: {csvResults.errors.length}
+                  </Typography>
+                </Box>
+              )}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCsvUploadOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleCsvUpload}
+            disabled={!csvFile || csvUploading}
+            variant="contained"
+            startIcon={csvUploading ? <CircularProgress size={20} /> : <Update />}
+          >
+            {csvUploading ? 'Uploading...' : 'Upload & Update'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
-
-export default ContactListPage;
+  
+  export default ContactListPage;
