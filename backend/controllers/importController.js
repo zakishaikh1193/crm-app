@@ -55,7 +55,7 @@ export const parseCSVFile = (filePath) => {
     });
     
     const parser = parse({ 
-        skip_empty_lines: true,
+      skip_empty_lines: true,
       trim: true,
       relax_quotes: true,
       relax_column_count: true,
@@ -165,8 +165,8 @@ export const uploadFiles = async (req, res) => {
     console.log(`Uploaded ${req.files.length} files successfully`);
     
     const fileDetails = req.files.map(file => ({
-          filename: file.originalname,
-          path: file.path,
+      filename: file.originalname,
+      path: file.path,
       size: file.size,
       mimetype: file.mimetype
     }));

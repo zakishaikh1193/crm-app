@@ -72,7 +72,6 @@ const ImportDataPage: React.FC = () => {
   const [files, setFiles] = useState<FileData[]>([]);
   const [contactFields, setContactFields] = useState<ContactField[]>([]);
   const [mappings, setMappings] = useState<Record<string, string>[]>([]);
-  const [usedFields, setUsedFields] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -194,28 +193,8 @@ const ImportDataPage: React.FC = () => {
 
   const handleMappingChange = (fileIndex: number, header: string, value: string) => {
     const newMappings = [...mappings];
-    const previousValue = newMappings[fileIndex][header];
-    
-    // Update the mapping
     newMappings[fileIndex][header] = value;
     setMappings(newMappings);
-    
-    // Update used fields
-    setUsedFields(prevUsedFields => {
-      const newUsedFields = new Set(prevUsedFields);
-      
-      // Remove the previous mapping
-      if (previousValue && previousValue !== '-- Ignore --') {
-        newUsedFields.delete(previousValue);
-      }
-      
-      // Add the new mapping if it's not "Ignore"
-      if (value && value !== '-- Ignore --') {
-        newUsedFields.add(value);
-      }
-      
-      return newUsedFields;
-    });
   };
 
   const handleImport = async () => {
@@ -270,43 +249,22 @@ const ImportDataPage: React.FC = () => {
     return field.group || 'Other';
   };
 
-  // Get available fields for selection (excluding already used ones)
-  const getAvailableFields = (currentValue: string) => {
-    return contactFields.filter(field => 
-      field.value === currentValue || !usedFields.has(field.value)
-    );
-  };
-
   // Auto-match logic: when files are uploaded, try to auto-map headers to CRM fields
   useEffect(() => {
     if (files.length > 0 && contactFields.length > 0 && mappings.length === 0) {
       const initialMappings = files.map((file: FileData) => {
         const mapping: Record<string, string> = {};
-        const used = new Set<string>();
-        
         file.headers?.forEach(header => {
-          // Try to find a field with a similar name that hasn't been used yet
+          // Try to find a field with a similar name
           const match = contactFields.find(f =>
-            !used.has(f.value) && (
-              f.value.toLowerCase() === header.toLowerCase() ||
-              f.label.toLowerCase() === header.toLowerCase() ||
-              f.value.replace(/_/g, '').toLowerCase() === header.replace(/\s/g, '').toLowerCase()
-            )
+            f.value.toLowerCase() === header.toLowerCase() ||
+            f.label.toLowerCase() === header.toLowerCase() ||
+            f.value.replace(/_/g, '').toLowerCase() === header.replace(/\s/g, '').toLowerCase()
           );
-          
-          if (match) {
-            mapping[header] = match.value;
-            used.add(match.value);
-          } else {
-            mapping[header] = '-- Ignore --';
-          }
+          mapping[header] = match ? match.value : '-- Ignore --';
         });
-        
-        // Update used fields
-        setUsedFields(prev => new Set([...prev, ...used]));
         return mapping;
       });
-      
       setMappings(initialMappings);
     }
     // eslint-disable-next-line
@@ -315,56 +273,22 @@ const ImportDataPage: React.FC = () => {
   // Quick action handlers
   const handleMapAllIgnore = (fileIndex: number) => {
     const newMappings = [...mappings];
-    const fieldsToRemove = new Set<string>();
-    
-    // First collect all fields that will be removed
     Object.keys(newMappings[fileIndex]).forEach(header => {
-      const currentValue = newMappings[fileIndex][header];
-      if (currentValue !== '-- Ignore --') {
-        fieldsToRemove.add(currentValue);
-      }
       newMappings[fileIndex][header] = '-- Ignore --';
     });
-    
-    // Update used fields by removing the ones we just unmapped
-    setUsedFields(prev => {
-      const newUsed = new Set(prev);
-      fieldsToRemove.forEach(field => newUsed.delete(field));
-      return newUsed;
-    });
-    
     setMappings(newMappings);
   };
   const handleResetMappings = (fileIndex: number) => {
     const newMappings = [...mappings];
-    const usedInThisReset = new Set<string>();
-    
-    // First, clear all current mappings for this file
     Object.keys(newMappings[fileIndex]).forEach(header => {
-      const currentValue = newMappings[fileIndex][header];
-      if (currentValue !== '-- Ignore --') {
-        usedInThisReset.add(currentValue);
-      }
-      
-      // Try to auto-match again, but only with fields not already used
+      // Try to auto-match again
       const match = contactFields.find(f =>
-        !usedFields.has(f.value) && !usedInThisReset.has(f.value) && (
-          f.value.toLowerCase() === header.toLowerCase() ||
-          f.label.toLowerCase() === header.toLowerCase() ||
-          f.value.replace(/_/g, '').toLowerCase() === header.replace(/\s/g, '').toLowerCase()
-        )
+        f.value.toLowerCase() === header.toLowerCase() ||
+        f.label.toLowerCase() === header.toLowerCase() ||
+        f.value.replace(/_/g, '').toLowerCase() === header.replace(/\s/g, '').toLowerCase()
       );
-      
-      if (match) {
-        newMappings[fileIndex][header] = match.value;
-        usedInThisReset.add(match.value);
-      } else {
-        newMappings[fileIndex][header] = '-- Ignore --';
-      }
+      newMappings[fileIndex][header] = match ? match.value : '-- Ignore --';
     });
-    
-    // Update the used fields with our new mappings
-    setUsedFields(prev => new Set([...prev, ...usedInThisReset]));
     setMappings(newMappings);
   };
   const handleApplyMappingToAll = (fileIndex: number) => {
@@ -681,36 +605,33 @@ const ImportDataPage: React.FC = () => {
                                 {header}
                               </Typography>
                               <Autocomplete
-                                options={[
-                                  { value: '-- Ignore --', label: '-- Ignore --' },
-                                  ...getAvailableFields(mappings[fileIndex][header])
-                                ]}
-                                value={
-                                  mappings[fileIndex][header] === '-- Ignore --' 
-                                    ? { value: '-- Ignore --', label: '-- Ignore --' }
-                                    : contactFields.find(f => f.value === mappings[fileIndex][header]) || 
-                                      { value: mappings[fileIndex][header], label: mappings[fileIndex][header] }
-                                }
+                                options={contactFields}
+                                getOptionLabel={(option) => option.label}
+                                value={contactFields.find(f => f.value === mappings[fileIndex]?.[header]) || null}
                                 onChange={(_, newValue) => {
-                                  handleMappingChange(
-                                    fileIndex,
-                                    header,
-                                    newValue?.value || '-- Ignore --'
-                                  );
+                                  handleMappingChange(fileIndex, header, newValue?.value || '-- Ignore --');
                                 }}
-                                groupBy={(option) => groupField(option)}
-                                getOptionLabel={(option) => option.label || option.value}
-                                getOptionDisabled={(option) => 
-                                  option.value !== '-- Ignore --' && 
-                                  option.value !== mappings[fileIndex][header] && 
-                                  usedFields.has(option.value)
-                                }
                                 renderInput={(params) => (
                                   <TextField
                                     {...params}
-                                    variant="outlined"
                                     size="small"
-                                    fullWidth
+                                    placeholder="Select field..."
+                                    sx={{
+                                      '& .MuiOutlinedInput-root': {
+                                        borderRadius: 2,
+                                        '&:hover': {
+                                          '& .MuiOutlinedInput-notchedOutline': {
+                                            borderColor: '#6366f1',
+                                          },
+                                        },
+                                        '&.Mui-focused': {
+                                          '& .MuiOutlinedInput-notchedOutline': {
+                                            borderColor: '#6366f1',
+                                            borderWidth: '2px',
+                                          },
+                                        },
+                                      },
+                                    }}
                                   />
                                 )}
                               />
