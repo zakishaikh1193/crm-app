@@ -97,6 +97,7 @@ export const getContacts = async (req, res) => {
       owner,
       has_email,
       has_phone,
+      exclude_status,
       // Add more filters as needed
     } = req.query;
 
@@ -133,6 +134,24 @@ export const getContacts = async (req, res) => {
       whereClause += ' AND EXISTS (SELECT 1 FROM phones p WHERE p.contact_id = c.id AND p.phone IS NOT NULL AND TRIM(p.phone) <> \'\')';
     } else if (has_phone === '0') {
       whereClause += ' AND NOT EXISTS (SELECT 1 FROM phones p WHERE p.contact_id = c.id AND p.phone IS NOT NULL AND TRIM(p.phone) <> \'\')';
+    }
+    
+    // Handle exclude_status parameter (can be multiple values separated by pipe or multiple parameters)
+    if (exclude_status) {
+      let excludeStatuses = [];
+      
+      if (Array.isArray(exclude_status)) {
+        // Multiple exclude_status parameters sent
+        excludeStatuses = exclude_status.map(s => s.trim()).filter(Boolean);
+      } else {
+        // Single exclude_status parameter with pipe-separated values
+        excludeStatuses = exclude_status.split('|').map(s => s.trim()).filter(Boolean);
+      }
+      
+      if (excludeStatuses.length > 0) {
+        whereClause += ` AND c.status NOT IN (${excludeStatuses.map(() => '?').join(',')})`;
+        params.push(...excludeStatuses);
+      }
     }
 
     // Get total count for pagination
@@ -623,58 +642,29 @@ export const updateContact = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      company_id,
       first_name,
       last_name,
-      full_name,
-      email,
-      phone,
-      mobile,
-      job_title,
-      department,
-      company_name,
-      company_phone,
+      title,
+      seniority,
+      status,
+      department, // department name or object
+      company, // company object or name
+      company_name, // company name (fallback)
+      owner_id,
+      stage,
+      lists,
+      last_contacted,
+      person_linkedin_url,
+      contact_owner,
       address,
       city,
       state,
-      postal_code,
       country,
-      status,
-      lead_source,
-      lead_status,
-      notes,
-      tags,
+      postal_code,
+      emails = [],
+      phones = [],
       ...customFields
     } = req.body;
-
-    // Normalize all fields
-    const norm = v => normalizeEmpty(v);
-    const normObj = obj => {
-      const o = {};
-      Object.keys(obj).forEach(k => { o[k] = norm(obj[k]); });
-      return o;
-    };
-    const upd_first_name = norm(first_name);
-    const upd_last_name = norm(last_name);
-    const upd_full_name = norm(full_name);
-    const upd_email = norm(email);
-    const upd_phone = norm(phone);
-    const upd_mobile = norm(mobile);
-    const upd_job_title = norm(job_title);
-    const upd_department = norm(department);
-    const upd_company_name = norm(company_name);
-    const upd_company_phone = norm(company_phone);
-    const upd_address = norm(address);
-    const upd_city = norm(city);
-    const upd_state = norm(state);
-    const upd_postal_code = norm(postal_code);
-    const upd_country = norm(country);
-    const upd_status = norm(status);
-    const upd_lead_source = norm(lead_source);
-    const upd_lead_status = norm(lead_status);
-    const upd_notes = norm(notes);
-    const upd_tags = norm(tags);
-    const upd_customFields = normObj(customFields);
 
     // Check if contact exists and user has permission
     const [existingContacts] = await pool.execute(
@@ -692,61 +682,169 @@ export const updateContact = async (req, res) => {
       return res.status(403).json({ error: 'Access denied. You can only edit your own contacts.' });
     }
 
-    // Auto-generate full_name if not provided
-    let finalFullName = full_name;
-    if (!finalFullName && (first_name || last_name)) {
-      finalFullName = [first_name, last_name].filter(Boolean).join(' ');
+    // Normalize all fields
+    const norm = v => normalizeEmpty(v);
+    const upd_first_name = norm(first_name);
+    const upd_last_name = norm(last_name);
+    const upd_title = norm(title);
+    const upd_seniority = norm(seniority);
+    const upd_status = norm(status);
+    const upd_stage = norm(stage);
+    const upd_lists = norm(lists);
+    const upd_last_contacted = norm(last_contacted);
+    const upd_person_linkedin_url = norm(person_linkedin_url);
+    const upd_contact_owner = norm(contact_owner);
+    const upd_address = norm(address);
+    const upd_city = norm(city);
+    const upd_state = norm(state);
+    const upd_country = norm(country);
+    const upd_postal_code = norm(postal_code);
+    Object.keys(customFields).forEach(k => { customFields[k] = norm(customFields[k]); });
+
+    // Handle company lookup/creation
+    let company_id = null;
+    let companyName = company_name;
+    if (company && typeof company === 'object' && company.name) {
+      companyName = company.name;
+    } else if (company && typeof company === 'string') {
+      companyName = company;
+    }
+    
+    if (companyName) {
+      const [companies] = await pool.execute('SELECT id FROM companies WHERE name = ?', [companyName]);
+      if (companies.length > 0) {
+        company_id = companies[0].id;
+      } else {
+        const [result] = await pool.execute(
+          'INSERT INTO companies (name) VALUES (?)',
+          [companyName]
+        );
+        company_id = result.insertId;
+      }
+    }
+
+    // Handle department lookup/creation
+    let department_id = null;
+    let departmentName = department;
+    if (department && typeof department === 'object' && department.name) {
+      departmentName = department.name;
+    } else if (department && typeof department === 'string') {
+      departmentName = department;
+    }
+    
+    if (departmentName) {
+      const [departments] = await pool.execute('SELECT id FROM departments WHERE name = ?', [departmentName]);
+      if (departments.length > 0) {
+        department_id = departments[0].id;
+      } else {
+        const [result] = await pool.execute(
+          'INSERT INTO departments (name) VALUES (?)',
+          [departmentName]
+        );
+        department_id = result.insertId;
+      }
     }
 
     // Prepare custom_fields JSON
-    const customFieldsJson = Object.keys(upd_customFields).length > 0 
-      ? JSON.stringify(upd_customFields) 
-      : null;
+    const customFieldsJson = Object.keys(customFields).length > 0 ? JSON.stringify(customFields) : null;
 
+    // Update contact
     await pool.execute(
       `UPDATE contacts SET 
-        company_id = ?, first_name = ?, last_name = ?, full_name = ?, email = ?, 
-        phone = ?, mobile = ?, job_title = ?, department = ?, company_name = ?, 
-        company_phone = ?, address = ?, city = ?, state = ?, 
-        postal_code = ?, country = ?, status = ?, lead_source = ?, lead_status = ?, 
-        notes = ?, tags = ?, custom_fields = ?
+        first_name = ?, last_name = ?, title = ?, seniority = ?, status = ?, 
+        department_id = ?, company_id = ?, owner_id = ?, stage = ?, lists = ?, 
+        last_contacted = ?, person_linkedin_url = ?, contact_owner = ?, address = ?, 
+        city = ?, state = ?, country = ?, postal_code = ?, custom_fields = ?
       WHERE id = ?`,
       [
+        upd_first_name || null,
+        upd_last_name || null,
+        upd_title || null,
+        upd_seniority || null,
+        upd_status || null,
+        department_id || null,
         company_id || null,
-        upd_first_name,
-        upd_last_name,
-        finalFullName || null,
-        upd_email,
-        upd_phone,
-        upd_mobile,
-        upd_job_title,
-        upd_department,
-        upd_company_name,
-        upd_company_phone,
-        upd_address,
-        upd_city,
-        upd_state,
-        upd_postal_code,
-        upd_country,
-        upd_status,
-        upd_lead_source,
-        upd_lead_status,
-        upd_notes,
-        upd_tags,
+        owner_id || null,
+        upd_stage || null,
+        upd_lists || null,
+        upd_last_contacted || null,
+        upd_person_linkedin_url || null,
+        upd_contact_owner || null,
+        upd_address || null,
+        upd_city || null,
+        upd_state || null,
+        upd_country || null,
+        upd_postal_code || null,
         customFieldsJson,
         id
       ]
     );
 
-    // Fetch updated contact
+    // Handle emails update
+    if (Array.isArray(emails)) {
+      // Delete existing emails
+      await pool.execute('DELETE FROM emails WHERE contact_id = ?', [id]);
+      
+      // Insert new emails
+      for (const emailObj of emails) {
+        if (emailObj.email) {
+          await pool.execute(
+            `INSERT INTO emails (contact_id, email, type, status, source, confidence, catch_all_status, last_verified_at, is_primary, unsubscribe)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              emailObj.email,
+              emailObj.type || 'primary',
+              emailObj.status || null,
+              emailObj.source || null,
+              emailObj.confidence || null,
+              emailObj.catch_all_status || null,
+              emailObj.last_verified_at || null,
+              emailObj.is_primary || false,
+              emailObj.unsubscribe || false
+            ]
+          );
+        }
+      }
+    }
+
+    // Handle phones update
+    if (Array.isArray(phones)) {
+      // Delete existing phones
+      await pool.execute('DELETE FROM phones WHERE contact_id = ?', [id]);
+      
+      // Insert new phones
+      for (const phoneObj of phones) {
+        if (phoneObj.phone) {
+          await pool.execute(
+            `INSERT INTO phones (contact_id, phone, type)
+             VALUES (?, ?, ?)`,
+            [
+              id,
+              phoneObj.phone,
+              phoneObj.type || 'work'
+            ]
+          );
+        }
+      }
+    }
+
+    // Fetch updated contact with full details
     const [contacts] = await pool.execute(
       `SELECT 
         c.*,
-        comp.name as company_name_resolved,
+        comp.name as company_name,
+        comp.website as company_website,
+        comp.industry as company_industry,
+        comp.city as company_city,
+        comp.state as company_state,
+        comp.country as company_country,
+        d.name as department_name,
         u.first_name as owner_first_name,
         u.last_name as owner_last_name
       FROM contacts c
       LEFT JOIN companies comp ON c.company_id = comp.id
+      LEFT JOIN departments d ON c.department_id = d.id
       LEFT JOIN users u ON c.owner_id = u.id
       WHERE c.id = ?`,
       [id]
@@ -760,6 +858,13 @@ export const updateContact = async (req, res) => {
         updatedContact.custom_fields = {};
       }
     }
+
+    // Fetch emails and phones
+    const [contactEmails] = await pool.execute('SELECT * FROM emails WHERE contact_id = ?', [id]);
+    const [contactPhones] = await pool.execute('SELECT * FROM phones WHERE contact_id = ?', [id]);
+
+    updatedContact.emails = contactEmails;
+    updatedContact.phones = contactPhones;
 
     res.json({
       message: 'Contact updated successfully',
@@ -2003,6 +2108,17 @@ export const getStatuses = async (req, res) => {
   } catch (error) {
     console.error('Get statuses error:', error);
     res.status(500).json({ error: 'Failed to fetch statuses' });
+  }
+};
+
+// Get all departments
+export const getDepartments = async (req, res) => {
+  try {
+    const [departments] = await pool.execute('SELECT id, name FROM departments ORDER BY name');
+    res.json({ departments });
+  } catch (error) {
+    console.error('Get departments error:', error);
+    res.status(500).json({ error: 'Failed to fetch departments' });
   }
 };
 

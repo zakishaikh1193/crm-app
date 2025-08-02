@@ -20,6 +20,7 @@ import {
   getMergedDuplicates,
   getContactFilterOptions,
   getStatuses,
+  getDepartments,
   updateContactStatus,
   bulkUpdateContactStatuses,
   bulkUpdateStatusesFromCSV
@@ -41,6 +42,7 @@ router.get('/missing-emails', getContactsMissingEmails);
 router.get('/merged-duplicates', getMergedDuplicates);
 router.get('/filter-options', getContactFilterOptions);
 router.get('/statuses', getStatuses);
+router.get('/departments', getDepartments);
 router.post('/', createContact);
 router.post('/mark-duplicates', markDuplicates);
 router.post('/clear-duplicates', clearDuplicates);

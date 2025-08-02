@@ -103,10 +103,15 @@ const ContactEditPage: React.FC = () => {
     if (id) {
       fetchContact();
       fetchStatuses();
-      fetchCompanies();
-      fetchDepartments();
     }
   }, [id]);
+
+  useEffect(() => {
+    if (contact) {
+      fetchDepartments();
+      fetchCompanies();
+    }
+  }, [contact]);
 
   const fetchContact = async () => {
     try {
@@ -133,18 +138,42 @@ const ContactEditPage: React.FC = () => {
   const fetchCompanies = async () => {
     try {
       const response = await api.get('/companies');
-      setCompanies(response.data.companies || []);
+      let companiesList = response.data.companies || [];
+      
+      // Add current company if it exists and is not in the list
+      if (contact?.company && !companiesList.find((c: Company) => c.id === contact.company?.id)) {
+        companiesList = [contact.company, ...companiesList];
+      }
+      
+      setCompanies(companiesList);
     } catch (err: any) {
       console.error('Failed to fetch companies:', err);
+      // If API fails, at least show the current company if it exists
+      if (contact?.company) {
+        setCompanies([contact.company]);
+      } else {
+        setCompanies([]);
+      }
     }
   };
 
   const fetchDepartments = async () => {
     try {
-      const response = await api.get('/departments');
-      setDepartments(response.data.departments || []);
+      // Use department from contact response if available, otherwise fetch from API
+      if (contact?.department) {
+        setDepartments([contact.department]);
+      } else {
+        const response = await api.get('/contacts/departments');
+        setDepartments(response.data.departments || []);
+      }
     } catch (err: any) {
       console.error('Failed to fetch departments:', err);
+      // If API fails, at least show the current department if it exists
+      if (contact?.department) {
+        setDepartments([contact.department]);
+      } else {
+        setDepartments([]);
+      }
     }
   };
 
@@ -412,29 +441,40 @@ const ContactEditPage: React.FC = () => {
                 Company & Department
               </Typography>
               <Grid container spacing={2}>
-                <Grid item xs={12}>
-                  <FormControl fullWidth margin="normal">
-                    <InputLabel>Company</InputLabel>
-                    <Select
-                      value={contact.company?.id || ''}
-                      onChange={(e) => {
-                        const companyId = e.target.value;
-                        const selectedCompany = companies.find(c => c.id === companyId);
-                        setContact({ ...contact, company: selectedCompany });
-                      }}
-                      label="Company"
-                    >
-                      <MenuItem value="">
-                        <em>No company</em>
-                      </MenuItem>
-                      {companies.map((company) => (
-                        <MenuItem key={company.id} value={company.id}>
-                          {company.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
+                                 <Grid item xs={12}>
+                   <FormControl fullWidth margin="normal">
+                     <InputLabel>Company</InputLabel>
+                     <Select
+                       value={contact.company?.id || ''}
+                       onChange={(e) => {
+                         const companyId = e.target.value;
+                         const selectedCompany = companies.find(c => c.id === companyId);
+                         setContact({ ...contact, company: selectedCompany });
+                       }}
+                       label="Company"
+                     >
+                       <MenuItem value="">
+                         <em>No company</em>
+                       </MenuItem>
+                       {/* Add current company if it's not in the companies list */}
+                       {contact.company && !companies.find(c => c.id === contact.company?.id) && (
+                         <MenuItem value={contact.company.id}>
+                           {contact.company.name} (Current)
+                         </MenuItem>
+                       )}
+                       {companies.map((company) => (
+                         <MenuItem key={company.id} value={company.id}>
+                           {company.name}
+                         </MenuItem>
+                       ))}
+                     </Select>
+                   </FormControl>
+                   {contact.company && (
+                     <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                       Current: {contact.company.name}
+                     </Typography>
+                   )}
+                 </Grid>
                 <Grid item xs={12}>
                   <FormControl fullWidth margin="normal">
                     <InputLabel>Department</InputLabel>
@@ -457,6 +497,11 @@ const ContactEditPage: React.FC = () => {
                       ))}
                     </Select>
                   </FormControl>
+                  {contact.department && (
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                      Current: {contact.department.name}
+                    </Typography>
+                  )}
                 </Grid>
               </Grid>
             </CardContent>

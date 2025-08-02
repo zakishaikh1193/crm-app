@@ -26,34 +26,34 @@ interface Company {
 const CreateContactPage: React.FC = () => {
   const navigate = useNavigate();
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [formData, setFormData] = useState({
-    company_id: '',
     first_name: '',
     last_name: '',
-    email: '',
-    phone: '',
-    mobile: '',
-    job_title: '',
-    department: '',
-    company_name: '',
-    company_email: '',
-    company_phone: '',
+    title: '',
+    seniority: '',
+    status: 'new',
+    stage: '',
+    lists: '',
+    last_contacted: '',
+    person_linkedin_url: '',
+    contact_owner: '',
     address: '',
     city: '',
     state: '',
-    postal_code: '',
     country: '',
-    status: 'new',
-    lead_source: '',
-    lead_status: 'new',
-    notes: '',
-    tags: '',
+    postal_code: '',
+    company_name: '',
+    department: '',
+    emails: [{ email: '', type: 'primary' }],
+    phones: [{ phone: '', type: 'work' }],
   });
 
   useEffect(() => {
     fetchCompanies();
+    fetchDepartments();
   }, []);
 
   const fetchCompanies = async () => {
@@ -62,6 +62,15 @@ const CreateContactPage: React.FC = () => {
       setCompanies(response.data.companies);
     } catch (err) {
       console.error('Error fetching companies:', err);
+    }
+  };
+
+  const fetchDepartments = async () => {
+    try {
+      const response = await api.get('/contacts/departments');
+      setDepartments(response.data.departments || []);
+    } catch (err) {
+      console.error('Error fetching departments:', err);
     }
   };
 
@@ -156,29 +165,44 @@ const CreateContactPage: React.FC = () => {
                   <Grid item xs={12}>
                     <TextField
                       fullWidth
-                      label="Email"
-                      name="email"
+                      label="Primary Email"
+                      name="emails[0].email"
                       type="email"
-                      value={formData.email}
-                      onChange={handleChange}
+                      value={formData.emails[0].email}
+                      onChange={(e) => {
+                        const newEmails = [...formData.emails];
+                        newEmails[0].email = e.target.value;
+                        setFormData({ ...formData, emails: newEmails });
+                      }}
                     />
                   </Grid>
                   <Grid item xs={12} sm={6}>
                     <TextField
                       fullWidth
-                      label="Phone"
-                      name="phone"
-                      value={formData.phone}
-                      onChange={handleChange}
+                      label="Work Phone"
+                      name="phones[0].phone"
+                      value={formData.phones[0].phone}
+                      onChange={(e) => {
+                        const newPhones = [...formData.phones];
+                        newPhones[0].phone = e.target.value;
+                        setFormData({ ...formData, phones: newPhones });
+                      }}
                     />
                   </Grid>
                   <Grid item xs={12} sm={6}>
                     <TextField
                       fullWidth
-                      label="Mobile"
-                      name="mobile"
-                      value={formData.mobile}
-                      onChange={handleChange}
+                      label="Mobile Phone"
+                      name="phones[1].phone"
+                      value={formData.phones[1]?.phone || ''}
+                      onChange={(e) => {
+                        const newPhones = [...formData.phones];
+                        if (!newPhones[1]) {
+                          newPhones[1] = { phone: '', type: 'mobile' };
+                        }
+                        newPhones[1].phone = e.target.value;
+                        setFormData({ ...formData, phones: newPhones });
+                      }}
                     />
                   </Grid>
                 </Grid>
@@ -197,8 +221,8 @@ const CreateContactPage: React.FC = () => {
                     <TextField
                       fullWidth
                       label="Job Title"
-                      name="job_title"
-                      value={formData.job_title}
+                      name="title"
+                      value={formData.title}
                       onChange={handleChange}
                     />
                   </Grid>
@@ -212,18 +236,27 @@ const CreateContactPage: React.FC = () => {
                     />
                   </Grid>
                   <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Seniority"
+                      name="seniority"
+                      value={formData.seniority}
+                      onChange={handleChange}
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
                     <FormControl fullWidth>
-                      <InputLabel>Company</InputLabel>
+                      <InputLabel>Department</InputLabel>
                       <Select
-                        name="company_id"
-                        value={formData.company_id}
-                        label="Company"
+                        name="department"
+                        value={formData.department}
+                        label="Department"
                         onChange={handleChange}
                       >
-                        <MenuItem value="">Select a company</MenuItem>
-                        {companies.map((company) => (
-                          <MenuItem key={company.id} value={company.id.toString()}>
-                            {company.name}
+                        <MenuItem value="">Select a department</MenuItem>
+                        {departments.map((dept) => (
+                          <MenuItem key={dept.id} value={dept.name}>
+                            {dept.name}
                           </MenuItem>
                         ))}
                       </Select>
@@ -306,18 +339,9 @@ const CreateContactPage: React.FC = () => {
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  Lead Information
+                  Status & Stage
                 </Typography>
                 <Grid container spacing={2}>
-                  <Grid item xs={12}>
-                    <TextField
-                      fullWidth
-                      label="Lead Source"
-                      name="lead_source"
-                      value={formData.lead_source}
-                      onChange={handleChange}
-                    />
-                  </Grid>
                   <Grid item xs={12} sm={6}>
                     <FormControl fullWidth>
                       <InputLabel>Status</InputLabel>
@@ -341,28 +365,20 @@ const CreateContactPage: React.FC = () => {
                     </FormControl>
                   </Grid>
                   <Grid item xs={12} sm={6}>
-                    <FormControl fullWidth>
-                      <InputLabel>Lead Status</InputLabel>
-                      <Select
-                        name="lead_status"
-                        value={formData.lead_status}
-                        label="Lead Status"
-                        onChange={handleChange}
-                      >
-                        <MenuItem value="new">New</MenuItem>
-                        <MenuItem value="contacted">Contacted</MenuItem>
-                        <MenuItem value="qualified">Qualified</MenuItem>
-                        <MenuItem value="unqualified">Unqualified</MenuItem>
-                        <MenuItem value="customer">Customer</MenuItem>
-                      </Select>
-                    </FormControl>
+                    <TextField
+                      fullWidth
+                      label="Stage"
+                      name="stage"
+                      value={formData.stage}
+                      onChange={handleChange}
+                    />
                   </Grid>
                   <Grid item xs={12}>
                     <TextField
                       fullWidth
-                      label="Tags (comma separated)"
-                      name="tags"
-                      value={formData.tags}
+                      label="Lists"
+                      name="lists"
+                      value={formData.lists}
                       onChange={handleChange}
                     />
                   </Grid>
@@ -377,15 +393,37 @@ const CreateContactPage: React.FC = () => {
                 <Typography variant="h6" gutterBottom>
                   Additional Information
                 </Typography>
-                <TextField
-                  fullWidth
-                  label="Notes"
-                  name="notes"
-                  multiline
-                  rows={6}
-                  value={formData.notes}
-                  onChange={handleChange}
-                />
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      label="LinkedIn URL"
+                      name="person_linkedin_url"
+                      value={formData.person_linkedin_url}
+                      onChange={handleChange}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      label="Contact Owner"
+                      name="contact_owner"
+                      value={formData.contact_owner}
+                      onChange={handleChange}
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Last Contacted"
+                      name="last_contacted"
+                      type="date"
+                      value={formData.last_contacted}
+                      onChange={handleChange}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Grid>
+                </Grid>
               </CardContent>
             </Card>
           </Grid>

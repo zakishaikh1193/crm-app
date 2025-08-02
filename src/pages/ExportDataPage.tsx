@@ -51,6 +51,8 @@ interface Filters {
   owner: number[];
   has_email: boolean | null;
   has_phone: boolean | null;
+  exclude_unsubscribed: boolean;
+  exclude_wrong_email: boolean;
 }
 
 const initialFilters: Filters = {
@@ -66,6 +68,8 @@ const initialFilters: Filters = {
   owner: [],
   has_email: null,
   has_phone: null,
+  exclude_unsubscribed: true,
+  exclude_wrong_email: true,
 };
 
 interface Email {
@@ -134,6 +138,7 @@ interface Contact {
   last_name?: string;
   title?: string;
   seniority?: string;
+  status?: string;
   stage?: string;
   lists?: string;
   last_contacted?: string;
@@ -169,6 +174,7 @@ function flattenContact(contact: Contact) {
     'First Name': contact.first_name || '',
     'Last Name': contact.last_name || '',
     'Title': contact.title || '',
+    'Status': contact.status || '',
     'Company': contact.company?.name || '',
     'Company Name for Emails': contact.company?.name || '',
     'Email': getEmail('primary'),
@@ -278,6 +284,8 @@ const ExportDataPage: React.FC = () => {
         if (filters.owner.length) params.append('owner', filters.owner.join('|'));
         if (filters.has_email !== null) params.append('has_email', filters.has_email ? '1' : '0');
         if (filters.has_phone !== null) params.append('has_phone', filters.has_phone ? '1' : '0');
+        if (filters.exclude_unsubscribed) params.append('exclude_status', 'unsubscribed');
+        if (filters.exclude_wrong_email) params.append('exclude_status', 'wrong-email');
         const res = await api.get(`/contacts?${params.toString()}`);
         setContacts(res.data.contacts);
         setTotalContacts(res.data.pagination.total);
@@ -310,6 +318,8 @@ const ExportDataPage: React.FC = () => {
     if (filters.owner.length) chips.push({ label: 'Owner', value: filterOptions.owners.filter(o => filters.owner.includes(o.id)).map(o => `${o.first_name} ${o.last_name}`).join(', '), key: 'owner' });
     if (filters.has_email !== null) chips.push({ label: 'Has Email', value: filters.has_email ? 'Yes' : 'No', key: 'has_email' });
     if (filters.has_phone !== null) chips.push({ label: 'Has Phone', value: filters.has_phone ? 'Yes' : 'No', key: 'has_phone' });
+    if (!filters.exclude_unsubscribed) chips.push({ label: 'Include Unsubscribed', value: 'Yes', key: 'exclude_unsubscribed' });
+    if (!filters.exclude_wrong_email) chips.push({ label: 'Include Wrong Email', value: 'Yes', key: 'exclude_wrong_email' });
     return chips;
   };
 
@@ -339,6 +349,8 @@ const ExportDataPage: React.FC = () => {
       if (filters.owner.length) params.set('owner', filters.owner.join('|'));
       if (filters.has_email !== null) params.set('has_email', filters.has_email ? '1' : '0');
       if (filters.has_phone !== null) params.set('has_phone', filters.has_phone ? '1' : '0');
+      if (filters.exclude_unsubscribed) params.set('exclude_status', 'unsubscribed');
+      if (filters.exclude_wrong_email) params.set('exclude_status', 'wrong-email');
       const res = await api.get(`/contacts?${params.toString()}`);
       const allContacts = res.data.contacts || [];
       const data = allContacts.map(flattenContact);
@@ -458,6 +470,14 @@ const ExportDataPage: React.FC = () => {
           control={<Checkbox checked={filters.has_phone === true} onChange={e => handleFilterChange('has_phone', e.target.checked ? true : null)} />}
           label="Has Phone"
         />
+        <FormControlLabel
+          control={<Checkbox checked={filters.exclude_unsubscribed} onChange={e => handleFilterChange('exclude_unsubscribed', e.target.checked)} />}
+          label="Exclude Unsubscribed"
+        />
+        <FormControlLabel
+          control={<Checkbox checked={filters.exclude_wrong_email} onChange={e => handleFilterChange('exclude_wrong_email', e.target.checked)} />}
+          label="Exclude Wrong Email"
+        />
         <Button variant="outlined" color="primary" sx={{ minWidth: 120 }} onClick={() => setFilters({ ...initialFilters })}>
           Reset Filters
         </Button>
@@ -486,6 +506,7 @@ const ExportDataPage: React.FC = () => {
             <TableHead>
               <TableRow>
                 <TableCell>Name</TableCell>
+                <TableCell>Status</TableCell>
                 <TableCell>Email</TableCell>
                 <TableCell>Phone</TableCell>
                 <TableCell>Company</TableCell>
@@ -497,6 +518,24 @@ const ExportDataPage: React.FC = () => {
                 <TableRow key={contact.id}>
                   <TableCell>
                     {contact.full_name || `${contact.first_name || ''} ${contact.last_name || ''}`}
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      label={contact.status || 'new'}
+                      color={
+                        contact.status === 'new' ? 'primary' :
+                        contact.status === 'contacted' ? 'warning' :
+                        contact.status === 'qualified' ? 'success' :
+                        contact.status === 'proposal' ? 'secondary' :
+                        contact.status === 'negotiation' ? 'info' :
+                        contact.status === 'closed_won' ? 'success' :
+                        contact.status === 'closed_lost' ? 'error' :
+                        contact.status === 'unsubscribed' ? 'error' :
+                        contact.status === 'wrong-email' ? 'error' :
+                        contact.status === 'inactive' ? 'default' : 'default'
+                      }
+                      size="small"
+                    />
                   </TableCell>
                   <TableCell>
                     {contact.emails && contact.emails.length > 0 ?
@@ -518,7 +557,7 @@ const ExportDataPage: React.FC = () => {
               ))}
               {!loading && contacts.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ color: '#94a3b8' }}>
+                  <TableCell colSpan={6} align="center" sx={{ color: '#94a3b8' }}>
                     No contacts found for the selected filters.
                   </TableCell>
                 </TableRow>
