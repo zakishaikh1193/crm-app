@@ -52,7 +52,7 @@ const EmailFinderPage: React.FC = () => {
         email: prediction.predicted_email,
       });
       setSaveSuccess('Predicted email saved as primary!');
-      setTimeout(() => navigate(`/contacts/${id}`), 1200);
+      setTimeout(() => navigate(`/missing-emails`), 1200);
     } catch (err: any) {
       setSaveError(err.response?.data?.error || 'Failed to save email');
     } finally {

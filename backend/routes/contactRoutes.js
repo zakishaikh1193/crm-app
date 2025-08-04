@@ -14,6 +14,7 @@ import {
   clearDuplicates,
   getDuplicateGroups,
   mergeContacts,
+  bulkMergeDuplicates,
   predictEmail,
   savePredictedEmail,
   getContactsMissingEmails,
@@ -49,6 +50,7 @@ router.post('/', createContact);
 router.post('/mark-duplicates', markDuplicates);
 router.post('/clear-duplicates', clearDuplicates);
 router.post('/merge', mergeContacts);
+router.post('/bulk-merge-duplicates', bulkMergeDuplicates);
 router.post('/delete-duplicates', deleteMergedDuplicates);
 router.put('/bulk-status', bulkUpdateContactStatuses);
 router.post('/bulk-update-statuses-csv', bulkUpdateStatusesFromCSV);

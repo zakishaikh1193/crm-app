@@ -15,6 +15,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { useNavigate } from 'react-router-dom';
 import api from '../config/axiosConfig';
+import { Merge } from '@mui/icons-material';
 
 // Define the steps for the stepper
 const steps = [
@@ -42,6 +43,8 @@ const DataUtilityPage: React.FC = () => {
   const [expanded, setExpanded] = useState<string | false>('panel1');
   const [scanStatus, setScanStatus] = useState<any>(null);
   const [checkingStatus, setCheckingStatus] = useState(true);
+  const [bulkMerging, setBulkMerging] = useState(false);
+  const [bulkMergeResults, setBulkMergeResults] = useState<any>(null);
   const navigate = useNavigate();
 
   // Check scan status on component mount
@@ -96,6 +99,31 @@ const DataUtilityPage: React.FC = () => {
   const handleQuickReview = async () => {
     if (scanStatus?.has_scanned) {
       await handleFetchDuplicates(1);
+    }
+  };
+
+  const handleBulkMerge = async () => {
+    setBulkMerging(true);
+    setSuccess('');
+    setError('');
+    try {
+      const response = await api.post('/contacts/bulk-merge-duplicates', {
+        max_groups: 1000000, // Increased to process more groups
+        confidence_threshold: 0.5, // Lower threshold for already-detected duplicates
+        merge_strategy: 'auto'
+      });
+      
+      setBulkMergeResults(response.data);
+      setSuccess(`Bulk merge completed! Merged ${response.data.merged_contacts} contacts from ${response.data.merged_groups} groups.`);
+      
+      // Refresh duplicate groups after merge
+      if (duplicateGroups.length > 0) {
+        await handleFetchDuplicates(duplicatePage);
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to bulk merge duplicates');
+    } finally {
+      setBulkMerging(false);
     }
   };
 
@@ -278,6 +306,21 @@ const DataUtilityPage: React.FC = () => {
                 <Box sx={{ p: 2 }}>
                   <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>Additional Tools</Typography>
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {scanStatus?.has_scanned && (
+                      <>
+                        <Button
+                          variant="outlined"
+                          color="primary"
+                          onClick={handleBulkMerge}
+                          startIcon={<Merge />}
+                          disabled={bulkMerging}
+                          fullWidth
+                          sx={{ justifyContent: 'flex-start', mb: 1 }}
+                        >
+                          {bulkMerging ? <CircularProgress size={20} /> : 'Bulk Merge'}
+                        </Button>
+                      </>
+                    )}
                     <Button
                       variant="outlined"
                       color="info"
@@ -337,10 +380,33 @@ const DataUtilityPage: React.FC = () => {
             {error}
           </Alert>
         )}
+        {bulkMergeResults && (
+          <Alert 
+            severity="info" 
+            sx={{ mb: 2 }}
+            onClose={() => setBulkMergeResults(null)}
+          >
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+              Bulk Merge Results:
+            </Typography>
+            <Typography variant="body2">
+              • Merged {bulkMergeResults.merged_contacts} contacts from {bulkMergeResults.merged_groups} groups
+            </Typography>
+            <Typography variant="body2">
+              • Processed {bulkMergeResults.total_groups_processed} total groups
+            </Typography>
+            <Typography variant="body2">
+              • Confidence threshold: {Math.round(bulkMergeResults.confidence_threshold * 100)}%
+            </Typography>
+            <Typography variant="body2">
+              • Strategy: {bulkMergeResults.merge_strategy}
+            </Typography>
+          </Alert>
+        )}
       </Box>
 
       {/* Help Section */}
-      <Accordion 
+      {/* <Accordion 
         expanded={expanded === 'panel1'} 
         onChange={handleAccordionChange('panel1')}
         sx={{ mb: 3, boxShadow: 2 }}
@@ -374,7 +440,7 @@ const DataUtilityPage: React.FC = () => {
             </Typography>
           </Box>
         </AccordionDetails>
-      </Accordion>
+      </Accordion> */}
 
       {/* Duplicates Review UI */}
       {duplicateGroups.length > 0 && (

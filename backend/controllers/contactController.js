@@ -1679,6 +1679,410 @@ export const mergeContacts = async (req, res) => {
   }
 };
 
+// Bulk merge duplicate groups automatically
+export const bulkMergeDuplicates = async (req, res) => {
+  const { 
+    max_groups = 100, 
+    confidence_threshold = 0.5, // Lower threshold since these are already marked as duplicates
+    merge_strategy = 'auto' // 'auto', 'conservative', 'aggressive'
+  } = req.body;
+  
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    
+    // 1. Get duplicate groups to process
+    const [duplicateGroups] = await connection.query(`
+      SELECT 
+        duplicate_of as master_id,
+        COUNT(*) as duplicate_count
+      FROM contacts 
+      WHERE is_duplicate = 1 AND duplicate_of IS NOT NULL 
+      GROUP BY duplicate_of 
+      HAVING COUNT(*) > 0
+      ORDER BY duplicate_count DESC
+      LIMIT ?
+    `, [max_groups]);
+    
+    if (duplicateGroups.length === 0) {
+      return res.json({ 
+        message: 'No duplicate groups found to merge',
+        merged_groups: 0,
+        merged_contacts: 0
+      });
+    }
+    
+    const masterIds = duplicateGroups.map(g => g.master_id);
+    
+    // 2. Get all contacts in these groups
+    const [allContacts] = await connection.query(`
+      SELECT * FROM contacts 
+      WHERE id IN (${masterIds.map(() => '?').join(',')}) 
+      OR (is_duplicate = 1 AND duplicate_of IN (${masterIds.map(() => '?').join(',')}))
+    `, [...masterIds, ...masterIds]);
+    
+    // 3. Group contacts by master
+    const groups = {};
+    for (const contact of allContacts) {
+      const masterId = contact.is_duplicate ? contact.duplicate_of : contact.id;
+      if (!groups[masterId]) {
+        groups[masterId] = {
+          master: null,
+          duplicates: []
+        };
+      }
+      if (contact.is_duplicate) {
+        groups[masterId].duplicates.push(contact);
+      } else {
+        groups[masterId].master = contact;
+      }
+    }
+    
+    // 4. Collect all contact IDs for fetching related data
+    const allContactIds = allContacts.map(c => c.id);
+    
+    // 5. Fetch all emails and phones for these contacts
+    let emailsByContact = {}, phonesByContact = {};
+    if (allContactIds.length > 0) {
+      const [emails] = await connection.query(
+        `SELECT * FROM emails WHERE contact_id IN (${allContactIds.map(() => '?').join(',')})`,
+        allContactIds
+      );
+      emails.forEach(email => {
+        if (!emailsByContact[email.contact_id]) emailsByContact[email.contact_id] = [];
+        emailsByContact[email.contact_id].push(email);
+      });
+      const [phones] = await connection.query(
+        `SELECT * FROM phones WHERE contact_id IN (${allContactIds.map(() => '?').join(',')})`,
+        allContactIds
+      );
+      phones.forEach(phone => {
+        if (!phonesByContact[phone.contact_id]) phonesByContact[phone.contact_id] = [];
+        phonesByContact[phone.contact_id].push(phone);
+      });
+    }
+    
+    // 6. Attach emails and phones to contacts
+    for (const contact of allContacts) {
+      contact.emails = emailsByContact[contact.id] || [];
+      contact.phones = phonesByContact[contact.id] || [];
+    }
+    
+    // 4. Auto-merge logic
+    let mergedGroups = 0;
+    let mergedContacts = 0;
+    
+    for (const [masterId, group] of Object.entries(groups)) {
+      if (!group.master || group.duplicates.length === 0) continue;
+      
+      // Find the best master contact (most complete data)
+      const allContacts = [group.master, ...group.duplicates];
+      const bestMaster = selectBestMaster(allContacts);
+      const duplicates = allContacts.filter(c => c.id !== bestMaster.id);
+      
+          console.log(`Group ${masterId}: Selected master ${bestMaster.id} with ${duplicates.length} duplicates`);
+    console.log(`Master details: ${bestMaster.first_name} ${bestMaster.last_name}, emails: ${bestMaster.emails?.length || 0}, phones: ${bestMaster.phones?.length || 0}`);
+    
+    // Calculate merge confidence for each duplicate
+    const mergeDecisions = duplicates.map(duplicate => {
+      const confidence = calculateMergeConfidence(bestMaster, duplicate, merge_strategy);
+      return {
+        duplicate,
+        confidence,
+        shouldMerge: confidence >= confidence_threshold
+      };
+    });
+    
+    // Debug logging
+    console.log(`Group ${masterId}: ${duplicates.length} duplicates, confidence scores:`, 
+      mergeDecisions.map(d => ({ 
+        id: d.duplicate.id, 
+        name: `${d.duplicate.first_name} ${d.duplicate.last_name}`,
+        confidence: d.confidence, 
+        shouldMerge: d.shouldMerge 
+      })));
+      
+      // Filter duplicates that meet confidence threshold
+      const duplicatesToMerge = mergeDecisions
+        .filter(decision => decision.shouldMerge)
+        .map(decision => decision.duplicate);
+      
+      if (duplicatesToMerge.length === 0) {
+        console.log(`Group ${masterId}: No duplicates met confidence threshold ${confidence_threshold}`);
+        continue;
+      }
+      
+      // 5. Perform the merge
+      const duplicateIds = duplicatesToMerge.map(d => d.id);
+      
+      // Merge contact data (smart field selection)
+      const mergedFields = smartMergeFields(bestMaster, duplicatesToMerge);
+      
+      // Update best master with merged data
+      const updateFields = [];
+      const updateValues = [];
+      for (const [key, value] of Object.entries(mergedFields)) {
+        if (value !== null && value !== undefined && value !== '') {
+          updateFields.push(`${key} = ?`);
+          updateValues.push(value);
+        }
+      }
+      
+      if (updateFields.length > 0) {
+        await connection.query(
+          `UPDATE contacts SET ${updateFields.join(', ')} WHERE id = ?`,
+          [...updateValues, bestMaster.id]
+        );
+      }
+      
+      // Merge emails and phones
+      await mergeContactRelations(connection, bestMaster.id, duplicatesToMerge);
+      
+      // Mark duplicates as merged (including the old master if it's not the best master)
+      const contactsToMark = duplicatesToMerge;
+      if (bestMaster.id !== parseInt(masterId)) {
+        // If best master is different from original master, mark original master as duplicate too
+        contactsToMark.push({ id: parseInt(masterId) });
+      }
+      
+      const idsToMark = contactsToMark.map(c => c.id);
+      await connection.query(
+        `UPDATE contacts SET is_duplicate = 2, duplicate_of = ? WHERE id IN (${idsToMark.map(() => '?').join(',')})`,
+        [bestMaster.id, ...idsToMark]
+      );
+      
+      mergedGroups++;
+      mergedContacts += duplicatesToMerge.length;
+      if (bestMaster.id !== parseInt(masterId)) {
+        mergedContacts++; // Count the old master as well if it was replaced
+      }
+    }
+    
+    await connection.commit();
+    
+    res.json({
+      message: `Bulk merge completed`,
+      merged_groups: mergedGroups,
+      merged_contacts: mergedContacts,
+      total_groups_processed: duplicateGroups.length,
+      confidence_threshold: confidence_threshold,
+      merge_strategy: merge_strategy
+    });
+    
+  } catch (error) {
+    await connection.rollback();
+    console.error('Bulk merge error:', error);
+    res.status(500).json({ error: 'Failed to bulk merge duplicates', details: error.message });
+  } finally {
+    connection.release();
+  }
+};
+
+// Helper function to calculate merge confidence
+function calculateMergeConfidence(bestMaster, duplicate, strategy) {
+  // Use the same logic as markDuplicates - if they're already marked as duplicates, they should be merged
+  // The confidence is based on how they were originally detected as duplicates
+  
+  let score = 0;
+  let totalChecks = 0;
+  
+  // Email matching (highest confidence - exact email match)
+  if (bestMaster.emails && duplicate.emails && bestMaster.emails.length > 0 && duplicate.emails.length > 0) {
+    const masterEmails = bestMaster.emails.map(e => e.email.toLowerCase());
+    const duplicateEmails = duplicate.emails.map(e => e.email.toLowerCase());
+    const commonEmails = masterEmails.filter(email => duplicateEmails.includes(email));
+    if (commonEmails.length > 0) {
+      score += 1.0; // High confidence for email matches
+      totalChecks++;
+    }
+  }
+  
+  // Name matching (high confidence)
+  if (bestMaster.first_name && duplicate.first_name && bestMaster.last_name && duplicate.last_name) {
+    const masterFullName = `${bestMaster.first_name} ${bestMaster.last_name}`.toLowerCase();
+    const duplicateFullName = `${duplicate.first_name} ${duplicate.last_name}`.toLowerCase();
+    
+    if (masterFullName === duplicateFullName) {
+      score += 0.9;
+      totalChecks++;
+    } else if (bestMaster.first_name.toLowerCase() === duplicate.first_name.toLowerCase() && 
+               bestMaster.last_name.toLowerCase() === duplicate.last_name.toLowerCase()) {
+      score += 0.8;
+      totalChecks++;
+    }
+  }
+  
+  // Company matching (medium confidence)
+  if (bestMaster.company_id && duplicate.company_id && bestMaster.company_id === duplicate.company_id) {
+    score += 0.6;
+    totalChecks++;
+  }
+  
+  // Phone matching (medium confidence)
+  if (bestMaster.phones && duplicate.phones && bestMaster.phones.length > 0 && duplicate.phones.length > 0) {
+    const masterPhones = bestMaster.phones.map(p => p.phone.replace(/\D/g, ''));
+    const duplicatePhones = duplicate.phones.map(p => p.phone.replace(/\D/g, ''));
+    const commonPhones = masterPhones.filter(phone => phone && duplicatePhones.includes(phone));
+    if (commonPhones.length > 0) {
+      score += 0.7;
+      totalChecks++;
+    }
+  }
+  
+  // If they were already marked as duplicates, give them a base confidence
+  if (duplicate.is_duplicate === 1 && duplicate.duplicate_of === bestMaster.id) {
+    score += 0.5; // Base confidence for already-detected duplicates
+    totalChecks++;
+  }
+  
+  // Adjust confidence based on strategy
+  if (strategy === 'conservative') {
+    return totalChecks > 0 ? Math.min(score / totalChecks * 0.8, 1.0) : 0;
+  } else if (strategy === 'aggressive') {
+    return totalChecks > 0 ? Math.min(score / totalChecks * 1.2, 1.0) : 0;
+  } else {
+    // auto strategy
+    return totalChecks > 0 ? Math.min(score / totalChecks, 1.0) : 0;
+  }
+}
+
+// Helper function to smart merge fields
+function smartMergeFields(master, duplicates) {
+  const merged = { ...master };
+  
+  // Fields that can be merged (exclude emails, phones, and other non-database fields)
+  const fieldsToMerge = [
+    'title', 'seniority', 'department_id', 'owner_id', 'stage', 'lists',
+    'last_contacted', 'person_linkedin_url', 'contact_owner',
+    'address', 'city', 'state', 'country', 'postal_code', 'status'
+  ];
+  
+  for (const duplicate of duplicates) {
+    for (const field of fieldsToMerge) {
+      // If master field is empty/null and duplicate has a value, use duplicate's value
+      if ((!merged[field] || merged[field] === '' || merged[field] === null) && duplicate[field]) {
+        merged[field] = duplicate[field];
+      }
+      // If both have different values, use the more recent one (based on updated_at)
+      else if (merged[field] && duplicate[field] && merged[field] !== duplicate[field]) {
+        const masterUpdated = new Date(merged.updated_at || merged.created_at || 0);
+        const duplicateUpdated = new Date(duplicate.updated_at || duplicate.created_at || 0);
+        
+        if (duplicateUpdated > masterUpdated) {
+          merged[field] = duplicate[field];
+        }
+        // Otherwise keep master's value
+      }
+    }
+  }
+  
+  // Remove non-database fields that shouldn't be in UPDATE query
+  delete merged.emails;
+  delete merged.phones;
+  delete merged.id;
+  delete merged.created_at;
+  delete merged.updated_at;
+  
+  return merged;
+}
+
+// Helper function to select the best master contact from a group
+function selectBestMaster(contacts) {
+  if (contacts.length === 0) return null;
+  if (contacts.length === 1) return contacts[0];
+  
+  // Score each contact based on data completeness
+  const scoredContacts = contacts.map(contact => {
+    let score = 0;
+    
+    // Basic info (high weight)
+    if (contact.first_name) score += 10;
+    if (contact.last_name) score += 10;
+    if (contact.title) score += 8;
+    if (contact.company_id) score += 8;
+    
+    // Contact info (medium weight)
+    if (contact.emails && contact.emails.length > 0) score += 6;
+    if (contact.phones && contact.phones.length > 0) score += 6;
+    if (contact.person_linkedin_url) score += 5;
+    
+    // Additional info (low weight)
+    if (contact.address) score += 3;
+    if (contact.city) score += 3;
+    if (contact.state) score += 3;
+    if (contact.country) score += 3;
+    if (contact.department_id) score += 4;
+    if (contact.owner_id) score += 4;
+    
+    // Prefer contacts that are not already marked as duplicates
+    if (!contact.is_duplicate) score += 5;
+    
+    // Prefer more recently updated contacts
+    const updatedAt = new Date(contact.updated_at || contact.created_at || 0);
+    const daysSinceUpdate = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60 * 24);
+    if (daysSinceUpdate < 30) score += 3; // Recent updates get bonus
+    
+    return { contact, score };
+  });
+  
+  // Sort by score (highest first) and return the best
+  scoredContacts.sort((a, b) => b.score - a.score);
+  return scoredContacts[0].contact;
+}
+
+// Helper function to merge contact relations (emails, phones)
+async function mergeContactRelations(connection, masterId, duplicates) {
+  // Get all emails and phones from duplicates
+  const duplicateIds = duplicates.map(d => d.id);
+  
+  // Merge emails
+  const [duplicateEmails] = await connection.query(
+    `SELECT * FROM emails WHERE contact_id IN (${duplicateIds.map(() => '?').join(',')})`,
+    duplicateIds
+  );
+  
+  const [masterEmails] = await connection.query(
+    'SELECT * FROM emails WHERE contact_id = ?',
+    [masterId]
+  );
+  
+  const existingEmails = new Set(masterEmails.map(e => e.email.toLowerCase()));
+  
+  for (const email of duplicateEmails) {
+    if (!existingEmails.has(email.email.toLowerCase())) {
+      await connection.query(
+        'INSERT INTO emails (contact_id, email, type, is_primary) VALUES (?, ?, ?, ?)',
+        [masterId, email.email, email.type || 'primary', email.is_primary || false]
+      );
+      existingEmails.add(email.email.toLowerCase());
+    }
+  }
+  
+  // Merge phones
+  const [duplicatePhones] = await connection.query(
+    `SELECT * FROM phones WHERE contact_id IN (${duplicateIds.map(() => '?').join(',')})`,
+    duplicateIds
+  );
+  
+  const [masterPhones] = await connection.query(
+    'SELECT * FROM phones WHERE contact_id = ?',
+    [masterId]
+  );
+  
+  const existingPhones = new Set(masterPhones.map(p => p.phone.replace(/\D/g, '')));
+  
+  for (const phone of duplicatePhones) {
+    const cleanPhone = phone.phone.replace(/\D/g, '');
+    if (!existingPhones.has(cleanPhone)) {
+      await connection.query(
+        'INSERT INTO phones (contact_id, phone, type) VALUES (?, ?, ?)',
+        [masterId, phone.phone, phone.type || 'work']
+      );
+      existingPhones.add(cleanPhone);
+    }
+  }
+}
+
 // Predict email for a contact based on company pattern
 export const predictEmail = async (req, res) => {
   const contactId = req.params.id;
