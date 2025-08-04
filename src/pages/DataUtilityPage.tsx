@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Box, Button, Typography, Alert, CircularProgress, Card, CardContent, 
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, 
   Paper, IconButton, Pagination, Stepper, Step, StepLabel, StepContent, 
-  Accordion, AccordionSummary, AccordionDetails, Tooltip, Divider, Grid
+  Accordion, AccordionSummary, AccordionDetails, Tooltip, Divider, Grid,
+  LinearProgress, Chip
 } from '@mui/material';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import EmailIcon from '@mui/icons-material/Email';
@@ -11,6 +12,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { useNavigate } from 'react-router-dom';
 import api from '../config/axiosConfig';
 
@@ -38,28 +40,62 @@ const DataUtilityPage: React.FC = () => {
     per_page: 20
   });
   const [expanded, setExpanded] = useState<string | false>('panel1');
+  const [scanStatus, setScanStatus] = useState<any>(null);
+  const [checkingStatus, setCheckingStatus] = useState(true);
   const navigate = useNavigate();
+
+  // Check scan status on component mount
+  useEffect(() => {
+    checkScanStatus();
+  }, []);
+
+  const checkScanStatus = async () => {
+    setCheckingStatus(true);
+    try {
+      const response = await api.get('/contacts/duplicates/scan-status');
+      setScanStatus(response.data);
+      
+      // If duplicates are already scanned, mark step 0 as completed
+      if (response.data.has_scanned) {
+        setCompleted(prev => ({ ...prev, 0: true }));
+        setActiveStep(1);
+      }
+    } catch (err: any) {
+      console.error('Failed to check scan status:', err);
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
 
   const handleAccordionChange = (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
     setExpanded(isExpanded ? panel : false);
   };
 
-  const handleCleanData = async () => {
+  const handleCleanData = async (forceRescan = false) => {
     setLoading(true);
     setSuccess('');
     setError('');
     try {
-      await api.post('/contacts/mark-duplicates');
+      const url = forceRescan ? '/contacts/mark-duplicates?clear=true' : '/contacts/mark-duplicates';
+      await api.post(url);
       setSuccess('Duplicates found and marked successfully! Click "Review Duplicates" to view and merge them.');
       // Optionally, fetch duplicates to display
       const res = await api.get('/contacts?duplicates=1');
       setDuplicates(res.data.contacts || []);
       setCompleted({...completed, 0: true});
       setActiveStep(1);
+      // Update scan status
+      await checkScanStatus();
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to find duplicates');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleQuickReview = async () => {
+    if (scanStatus?.has_scanned) {
+      await handleFetchDuplicates(1);
     }
   };
 
@@ -80,6 +116,9 @@ const DataUtilityPage: React.FC = () => {
         current_page: 1,
         per_page: 20
       });
+      setCompleted({});
+      setActiveStep(0);
+      await checkScanStatus();
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to clear duplicates');
     } finally {
@@ -147,23 +186,46 @@ const DataUtilityPage: React.FC = () => {
                       <HelpOutlineIcon fontSize="small" sx={{ ml: 1, color: 'text.secondary' }} />
                     </Tooltip>
                   </Box>
-                  <Button
-                    variant="contained"
-                    color="primary"
-                    onClick={handleCleanData}
-                    disabled={loading || completed[0]}
-                    fullWidth
-                    sx={{ mb: 1 }}
-                    startIcon={completed[0] ? <CheckCircleIcon /> : null}
-                  >
-                    {loading ? <CircularProgress size={24} /> : 
-                     completed[0] ? 'Duplicates Found' : 'Scan for Duplicates'}
-                  </Button>
-                  {completed[0] && (
-                    <Typography variant="caption" color="success.main" sx={{ display: 'flex', alignItems: 'center' }}>
-                      <CheckCircleIcon fontSize="small" sx={{ mr: 0.5 }} />
-                      Scan completed successfully
-                    </Typography>
+                  
+                  {checkingStatus ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <CircularProgress size={20} />
+                      <Typography variant="body2">Checking status...</Typography>
+                    </Box>
+                  ) : scanStatus?.has_scanned ? (
+                    <Box>
+                      <Chip 
+                        label={`${scanStatus.total_groups} groups found`}
+                        color="success"
+                        sx={{ mb: 1 }}
+                      />
+                      <Button
+                        variant="contained"
+                        color="primary"
+                        onClick={() => handleCleanData(true)}
+                        disabled={loading}
+                        fullWidth
+                        sx={{ mb: 1 }}
+                        startIcon={<RefreshIcon />}
+                      >
+                        {loading ? <CircularProgress size={24} /> : 'Re-scan Duplicates'}
+                      </Button>
+                      <Typography variant="caption" color="success.main" sx={{ display: 'flex', alignItems: 'center' }}>
+                        <CheckCircleIcon fontSize="small" sx={{ mr: 0.5 }} />
+                        Previous scan found {scanStatus.total_duplicates} duplicates
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={() => handleCleanData(false)}
+                      disabled={loading}
+                      fullWidth
+                      sx={{ mb: 1 }}
+                    >
+                      {loading ? <CircularProgress size={24} /> : 'Scan for Duplicates'}
+                    </Button>
                   )}
                 </Box>
               </Grid>
@@ -177,21 +239,35 @@ const DataUtilityPage: React.FC = () => {
                       <HelpOutlineIcon fontSize="small" sx={{ ml: 1, color: 'text.secondary' }} />
                     </Tooltip>
                   </Box>
-                  <Button
-                    variant={completed[0] ? "contained" : "outlined"}
-                    color="secondary"
-                    onClick={() => handleFetchDuplicates(1)}
-                    disabled={loadingDuplicates || !completed[0]}
-                    fullWidth
-                    sx={{ mb: 1 }}
-                    startIcon={completed[1] ? <CheckCircleIcon /> : null}
-                  >
-                    {loadingDuplicates ? <CircularProgress size={24} /> : 
-                     completed[1] ? 'Review in Progress' : 'Review Duplicates'}
-                  </Button>
-                  {duplicatePagination.total > 0 && (
+                  
+                  {scanStatus?.has_scanned ? (
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      onClick={handleQuickReview}
+                      disabled={loadingDuplicates}
+                      fullWidth
+                      sx={{ mb: 1 }}
+                      startIcon={completed[1] ? <CheckCircleIcon /> : null}
+                    >
+                      {loadingDuplicates ? <CircularProgress size={24} /> : 
+                       completed[1] ? 'Review in Progress' : 'Quick Review Duplicates'}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outlined"
+                      color="secondary"
+                      disabled={true}
+                      fullWidth
+                      sx={{ mb: 1 }}
+                    >
+                      Scan First
+                    </Button>
+                  )}
+                  
+                  {scanStatus?.has_scanned && (
                     <Typography variant="caption" color="text.secondary">
-                      Found {duplicatePagination.total} potential duplicate groups
+                      {scanStatus.total_groups} duplicate groups available for review
                     </Typography>
                   )}
                 </Box>
@@ -276,12 +352,14 @@ const DataUtilityPage: React.FC = () => {
           <Box sx={{ mb: 2 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Step 1: Find Duplicates</Typography>
             <Typography variant="body2" paragraph>
-              Click "Scan for Duplicates" to search your contacts for potential duplicates. This process may take a few moments depending on the size of your database.
+              Click "Scan for Duplicates" to search your contacts for potential duplicates. This process may take a few moments depending on the size of your database. 
+              <strong>Once scanned, results are cached so you don't need to re-scan every time.</strong>
             </Typography>
             
             <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Step 2: Review & Merge</Typography>
             <Typography variant="body2" paragraph>
-              After scanning, click "Review Duplicates" to see potential matches. Review each group and use the "Merge Group" button to combine duplicate records.
+              After scanning, click "Quick Review Duplicates" to see potential matches. Review each group and use the "Merge Group" button to combine duplicate records.
+              <strong>You can review duplicates immediately without re-scanning.</strong>
             </Typography>
             
             <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Additional Tools</Typography>
@@ -292,7 +370,7 @@ const DataUtilityPage: React.FC = () => {
             </Typography>
             
             <Typography variant="caption" color="text.secondary">
-              Note: No changes are made to your data until you explicitly merge records.
+              Note: No changes are made to your data until you explicitly merge records. Scan results are cached for faster subsequent access.
             </Typography>
           </Box>
         </AccordionDetails>

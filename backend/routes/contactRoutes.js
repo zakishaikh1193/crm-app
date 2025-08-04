@@ -10,6 +10,7 @@ import {
   importContactsFromFiles,
   getDashboardStats,
   markDuplicates,
+  checkDuplicateScanStatus,
   clearDuplicates,
   getDuplicateGroups,
   mergeContacts,
@@ -38,6 +39,7 @@ router.post('/import', importContacts);
 router.post('/import-from-files', importContactsFromFiles);
 router.get('/dashboard-stats', getDashboardStats);
 router.get('/duplicates', getDuplicateGroups);
+router.get('/duplicates/scan-status', checkDuplicateScanStatus);
 router.get('/missing-emails', getContactsMissingEmails);
 router.get('/merged-duplicates', getMergedDuplicates);
 router.get('/filter-options', getContactFilterOptions);

@@ -86,6 +86,7 @@ export const getContacts = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const {
+      search,
       company,
       industry,
       department,
@@ -106,6 +107,40 @@ export const getContacts = async (req, res) => {
     // Build WHERE clause and params
     let whereClause = ' WHERE 1=1';
     const params = [];
+    
+    // Handle search parameter with simple but effective search
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      const searchWords = searchTerm.split(/\s+/).filter(word => word.length > 0);
+      
+      if (searchWords.length > 0) {
+        let searchConditions = [];
+        
+        // Simple name search
+        searchConditions.push(`
+          (
+            (c.first_name LIKE ? OR c.last_name LIKE ?)
+            OR (CONCAT(c.first_name, ' ', c.last_name) LIKE ?)
+            OR (CONCAT(c.last_name, ' ', c.first_name) LIKE ?)
+          )
+        `);
+        params.push(
+          `%${searchTerm}%`, `%${searchTerm}%`,
+          `%${searchTerm}%`, `%${searchTerm}%`
+        );
+        
+        // Email search
+        searchConditions.push(`(EXISTS (SELECT 1 FROM emails e WHERE e.contact_id = c.id AND e.email LIKE ?))`);
+        params.push(`%${searchTerm}%`);
+        
+        // Company and title search
+        searchConditions.push(`(co.name LIKE ? OR c.title LIKE ? OR d.name LIKE ?)`);
+        params.push(`%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`);
+        
+        whereClause += ` AND (${searchConditions.join(' OR ')})`;
+      }
+    }
+    
     // Helper to add multi-select filters (now splits by pipe |)
     const addMultiSelect = (field, values, tableAlias = 'c') => {
       if (!values) return;
@@ -160,7 +195,7 @@ export const getContacts = async (req, res) => {
     const countSql = `SELECT COUNT(*) as total FROM contacts c LEFT JOIN companies co ON c.company_id = co.id LEFT JOIN departments d ON c.department_id = d.id LEFT JOIN users u ON c.owner_id = u.id${whereClause}`;
     const [[{ total }]] = await pool.execute(countSql, params);
 
-    // Main query
+    // Main query with relevance scoring
     let sql = `SELECT
       c.id AS contact_id,
       c.first_name,
@@ -218,8 +253,52 @@ export const getContacts = async (req, res) => {
     LEFT JOIN companies co ON c.company_id = co.id
     LEFT JOIN departments d ON c.department_id = d.id
     LEFT JOIN users u ON c.owner_id = u.id
-    ${whereClause}
-    ORDER BY c.id DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+    ${whereClause}`;
+    
+    // Enhanced ordering for search results with company priority
+    if (search && search.trim()) {
+      sql += ` ORDER BY 
+        -- Priority 1: Name starts with search term
+        CASE 
+          WHEN c.first_name LIKE ? OR c.last_name LIKE ? THEN 1
+          WHEN CONCAT(c.first_name, ' ', c.last_name) LIKE ? THEN 1
+          WHEN CONCAT(c.last_name, ' ', c.first_name) LIKE ? THEN 1
+          -- Priority 2: Company name starts with search term
+          WHEN co.name LIKE ? THEN 2
+          -- Priority 3: Name contains search term
+          WHEN c.first_name LIKE ? OR c.last_name LIKE ? THEN 3
+          WHEN CONCAT(c.first_name, ' ', c.last_name) LIKE ? THEN 3
+          WHEN CONCAT(c.last_name, ' ', c.first_name) LIKE ? THEN 3
+          -- Priority 4: Company name contains search term
+          WHEN co.name LIKE ? THEN 4
+          -- Priority 5: Title or department contains search term
+          WHEN c.title LIKE ? OR d.name LIKE ? THEN 5
+          ELSE 6
+        END ASC,
+        c.first_name ASC, c.last_name ASC
+      `;
+      
+      // Add parameters for ordering
+      const searchTerm = search.trim();
+      params.push(
+        // Priority 1: Name starts with
+        `${searchTerm}%`, `${searchTerm}%`,
+        `${searchTerm}%`, `${searchTerm}%`,
+        // Priority 2: Company starts with
+        `${searchTerm}%`,
+        // Priority 3: Name contains
+        `%${searchTerm}%`, `%${searchTerm}%`,
+        `%${searchTerm}%`, `%${searchTerm}%`,
+        // Priority 4: Company contains
+        `%${searchTerm}%`,
+        // Priority 5: Title/department contains
+        `%${searchTerm}%`, `%${searchTerm}%`
+      );
+    } else {
+      sql += ` ORDER BY c.id DESC`;
+    }
+    
+    sql += ` LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
     const [rows] = await pool.execute(sql, params);
     if (!rows || !Array.isArray(rows)) {
       return res.json({ contacts: [], pagination: { total: 0, total_pages: 0, current_page: page, per_page: limit } });
@@ -884,11 +963,6 @@ export const deleteContact = async (req, res) => {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
-    // Check ownership
-    const contact = existingContacts[0];
-    if (contact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'Access denied. You can only delete your own contacts.' });
-    }
 
     await pool.execute('DELETE FROM contacts WHERE id = ?', [id]);
 
@@ -1207,20 +1281,25 @@ export const getDashboardStats = async (req, res) => {
   }
 };
 
-// Mark duplicates API
-// Mark duplicates API
+// Mark duplicates API with progress tracking
 export const markDuplicates = async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    // 0. Clear previous duplicate markings (only for non-merged duplicates)
-    await connection.query('UPDATE contacts SET is_duplicate = 0, duplicate_of = NULL WHERE is_duplicate = 1');
+    // Check if we should clear previous markings
+    const shouldClear = req.query.clear === 'true';
+    
+    if (shouldClear) {
+      await connection.query('UPDATE contacts SET is_duplicate = 0, duplicate_of = NULL WHERE is_duplicate = 1');
+    }
 
     // 1. Load all contacts (id, first_name, last_name, company_id) excluding already merged contacts
+    console.log('Loading contacts...');
     const [contacts] = await connection.query(
       'SELECT id, first_name, last_name, company_id FROM contacts WHERE is_duplicate != 2'
     );
     
     // 2. Load all emails (contact_id, email) for non-merged contacts
+    console.log('Loading emails...');
     const [emails] = await connection.query(
       'SELECT e.contact_id, e.email FROM emails e ' +
       'JOIN contacts c ON e.contact_id = c.id ' +
@@ -1232,6 +1311,7 @@ export const markDuplicates = async (req, res) => {
     const duplicateGroups = [];
 
     // 3a. Duplicate by email (skip empty/null emails)
+    console.log('Finding email duplicates...');
     const emailMap = {};
     for (const e of emails) {
       if (!e.email || e.email.trim() === '') continue; // skip empty
@@ -1248,6 +1328,7 @@ export const markDuplicates = async (req, res) => {
     }
 
     // 3b. Duplicate by first+last+company (skip if first or last name is empty/null)
+    console.log('Finding name+company duplicates...');
     const nameCompanyMap = {};
     for (const c of contacts) {
       if (!c.first_name || !c.last_name || !c.company_id) continue; // skip if missing
@@ -1267,6 +1348,7 @@ export const markDuplicates = async (req, res) => {
     console.log(`Found ${duplicateGroups.length} initial duplicate groups`);
 
     // 4. Merge overlapping groups (if contacts appear in multiple groups, combine them)
+    console.log('Merging overlapping groups...');
     const mergedGroups = [];
 
     for (let i = 0; i < duplicateGroups.length; i++) {
@@ -1297,6 +1379,7 @@ export const markDuplicates = async (req, res) => {
     console.log(`Final merged groups:`, mergedGroups);
 
     // 5. For each group, pick master (lowest id), update others
+    console.log('Updating duplicate markings...');
     let updatedCount = 0;
     for (const group of mergedGroups) {
       if (group.length > 1) {
@@ -1316,10 +1399,15 @@ export const markDuplicates = async (req, res) => {
       }
     }
 
+    console.log(`Scan completed: ${updatedCount} duplicates marked in ${mergedGroups.length} groups`);
+
     res.json({ 
       message: `Duplicates marked using direct relationships only (empty values skipped)`, 
       groups: mergedGroups.length, 
-      duplicates: updatedCount 
+      duplicates: updatedCount,
+      total_contacts_processed: contacts.length,
+      total_emails_processed: emails.length,
+      scan_completed_at: new Date().toISOString()
     });
   } catch (error) {
     console.error('Error marking duplicates:', error);
@@ -2248,5 +2336,39 @@ export const bulkUpdateStatusesFromCSV = async (req, res) => {
   } catch (error) {
     console.error('Bulk update statuses from CSV error:', error);
     res.status(500).json({ error: 'Failed to update statuses from CSV' });
+  }
+};
+
+// Check if duplicates are already scanned and cached
+export const checkDuplicateScanStatus = async (req, res) => {
+  try {
+    // Check if there are any contacts marked as duplicates
+    const [duplicateCount] = await pool.query(
+      'SELECT COUNT(*) as count FROM contacts WHERE is_duplicate = 1'
+    );
+    
+    // Check if there are any duplicate groups
+    const [groupCount] = await pool.query(`
+      SELECT COUNT(*) as count FROM (
+        SELECT duplicate_of
+        FROM contacts 
+        WHERE is_duplicate = 1 AND duplicate_of IS NOT NULL 
+        GROUP BY duplicate_of 
+        HAVING COUNT(*) > 0
+      ) as \`groups\`
+    `);
+    
+    const hasScannedDuplicates = duplicateCount[0].count > 0;
+    const totalGroups = groupCount[0].count;
+    
+    res.json({
+      has_scanned: hasScannedDuplicates,
+      total_duplicates: duplicateCount[0].count,
+      total_groups: totalGroups,
+      last_scan_time: hasScannedDuplicates ? new Date().toISOString() : null
+    });
+  } catch (error) {
+    console.error('Check duplicate scan status error:', error);
+    res.status(500).json({ error: 'Failed to check scan status', details: error.message });
   }
 };

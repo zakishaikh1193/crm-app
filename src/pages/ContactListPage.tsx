@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Box,
@@ -97,8 +97,10 @@ const ContactListPage: React.FC = () => {
   
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [displaySearchTerm, setDisplaySearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -109,17 +111,47 @@ const ContactListPage: React.FC = () => {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvUploading, setCsvUploading] = useState(false);
   const [csvResults, setCsvResults] = useState<any>(null);
+  const [searchTimeout, setSearchTimeout] = useState<number | null>(null);
 
   const itemsPerPage = 10;
+
+  // Debounced search function
+  const debouncedSearch = useCallback((term: string) => {
+    if (searchTimeout) {
+      clearTimeout(searchTimeout);
+    }
+    
+    const timeout = setTimeout(() => {
+      setSearching(true);
+      setSearchTerm(term);
+      setCurrentPage(1); // Reset to first page when searching
+    }, 500);
+    
+    setSearchTimeout(timeout);
+  }, [searchTimeout]);
 
   useEffect(() => {
     fetchContacts();
     fetchStatuses();
   }, [currentPage, searchTerm, statusFilter]);
 
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimeout) {
+        clearTimeout(searchTimeout);
+      }
+    };
+  }, [searchTimeout]);
+
   const fetchContacts = async () => {
     try {
-      setLoading(true);
+      if (searchTerm) {
+        setSearching(true);
+      } else {
+        setLoading(true);
+      }
+      
       const params = new URLSearchParams({
         page: currentPage.toString(),
         limit: itemsPerPage.toString(),
@@ -142,6 +174,7 @@ const ContactListPage: React.FC = () => {
       setError(err.response?.data?.error || 'Failed to fetch contacts');
     } finally {
       setLoading(false);
+      setSearching(false);
     }
   };
 
@@ -169,8 +202,11 @@ const ContactListPage: React.FC = () => {
   };
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchTerm(e.target.value);
-    setCurrentPage(1);
+    const value = e.target.value;
+    // Update the display value immediately for better UX
+    setDisplaySearchTerm(value);
+    // Use debounced search to avoid API calls on every keystroke
+    debouncedSearch(value);
   };
 
   const handleStatusFilterChange = (e: any) => {
@@ -436,6 +472,11 @@ const ContactListPage: React.FC = () => {
               }}
             >
               Manage your customer contacts ({totalContacts} total)
+              {displaySearchTerm && (
+                <span style={{ color: '#6366f1', fontWeight: 600 }}>
+                  {' '}• {totalContacts} search result{totalContacts !== 1 ? 's' : ''} for "{displaySearchTerm}"
+                </span>
+              )}
             </Typography>
           </Box>
           <Box display="flex" gap={2} flexWrap="wrap">
@@ -524,16 +565,19 @@ const ContactListPage: React.FC = () => {
           <Box sx={{ p: 3 }}>
             <Box display="flex" gap={2} alignItems="center" flexWrap="wrap">
               <TextField
-                placeholder="Search contacts..."
+                placeholder="Search by name, company, email, phone, title..."
                 variant="outlined"
                 size="small"
-                value={searchTerm}
+                value={displaySearchTerm}
                 onChange={handleSearchChange}
                 InputProps={{
                   startAdornment: <Search sx={{ mr: 1, color: '#64748b' }} />,
+                  endAdornment: searching ? (
+                    <CircularProgress size={20} sx={{ color: '#6366f1' }} />
+                  ) : null,
                 }}
                 sx={{
-                  minWidth: 250,
+                  minWidth: 300,
                   '& .MuiOutlinedInput-root': {
                     borderRadius: 2,
                     '&:hover': {
@@ -581,6 +625,27 @@ const ContactListPage: React.FC = () => {
                 </Select>
               </FormControl>
             </Box>
+            
+            {/* Search Tips */}
+            {displaySearchTerm && (
+              <Box sx={{ mt: 2, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.1)' }}>
+                <Typography variant="body2" sx={{ color: '#6366f1', fontWeight: 600, mb: 1 }}>
+                  🔍 Smart Search:
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 0.5 }}>
+                  • <strong>Names:</strong> "Eric Brooks" or "Brooks Eric" - both work! Handles name reversals.
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 0.5 }}>
+                  • <strong>Companies:</strong> "Wiley" finds both people named Wiley AND contacts from Wiley company.
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 0.5 }}>
+                  • <strong>Smart Ranking:</strong> Prioritizes exact name matches, then company matches, then partial matches.
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>
+                  • <strong>Multi-field:</strong> Searches names, emails, companies, titles, and departments.
+                </Typography>
+              </Box>
+            )}
           </Box>
         </Card>
       </Grow>
