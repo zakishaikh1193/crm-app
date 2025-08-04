@@ -303,20 +303,33 @@ export const getContacts = async (req, res) => {
     if (!rows || !Array.isArray(rows)) {
       return res.json({ contacts: [], pagination: { total: 0, total_pages: 0, current_page: page, per_page: limit } });
     }
-    // Fetch emails and phones for these contacts
+    // Fetch emails and phones for these contacts using batching to avoid ER_PS_MANY_PARAM
     const contactIds = rows.map(row => row.contact_id);
     let emailsRows = [], phonesRows = [];
+    
     if (contactIds.length > 0) {
-      const [emails] = await pool.execute(
-        `SELECT * FROM emails WHERE contact_id IN (${contactIds.map(() => '?').join(',')})`,
-        contactIds
-      );
-      emailsRows = emails;
-      const [phones] = await pool.execute(
-        `SELECT * FROM phones WHERE contact_id IN (${contactIds.map(() => '?').join(',')})`,
-        contactIds
-      );
-      phonesRows = phones;
+      // Use batching to avoid too many parameters in IN clause
+      const BATCH_SIZE = 1000; // Safe batch size for MySQL
+      
+      // Fetch emails in batches
+      for (let i = 0; i < contactIds.length; i += BATCH_SIZE) {
+        const batch = contactIds.slice(i, i + BATCH_SIZE);
+        const [emails] = await pool.execute(
+          `SELECT * FROM emails WHERE contact_id IN (${batch.map(() => '?').join(',')})`,
+          batch
+        );
+        emailsRows.push(...emails);
+      }
+      
+      // Fetch phones in batches
+      for (let i = 0; i < contactIds.length; i += BATCH_SIZE) {
+        const batch = contactIds.slice(i, i + BATCH_SIZE);
+        const [phones] = await pool.execute(
+          `SELECT * FROM phones WHERE contact_id IN (${batch.map(() => '?').join(',')})`,
+          batch
+        );
+        phonesRows.push(...phones);
+      }
     }
     // 3. Map emails and phones to contacts
     const emailsByContact = {};
