@@ -675,12 +675,6 @@ export const updateContact = async (req, res) => {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
-    // Check ownership (only allow update if user is owner or admin/manager)
-    const contact = existingContacts[0];
-    if (contact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'Access denied. You can only edit your own contacts.' });
-    }
-
     // Normalize all fields
     const norm = v => normalizeEmpty(v);
     const upd_first_name = norm(first_name);
@@ -2132,12 +2126,6 @@ export const updateContactStatus = async (req, res) => {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
-    // Check ownership (only allow update if user is owner or admin/manager)
-    const contact = existingContacts[0];
-    if (contact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'Access denied. You can only edit your own contacts.' });
-    }
-
     await pool.execute(
       'UPDATE contacts SET status = ? WHERE id = ?',
       [status, id]
@@ -2170,18 +2158,6 @@ export const bulkUpdateContactStatuses = async (req, res) => {
 
     if (existingContacts.length === 0) {
       return res.status(404).json({ error: 'No contacts found' });
-    }
-
-    // Check ownership for all contacts
-    const unauthorizedContacts = existingContacts.filter(
-      contact => contact.owner_id !== req.user.id && !['admin', 'manager'].includes(req.user.role)
-    );
-
-    if (unauthorizedContacts.length > 0) {
-      return res.status(403).json({ 
-        error: 'Access denied. You can only edit your own contacts.',
-        unauthorized_count: unauthorizedContacts.length
-      });
     }
 
     await pool.execute(

@@ -197,7 +197,8 @@ const ContactMergePage = () => {
       fields = prepareFieldsForSubmit(fields);
       const res = await api.post('/contacts/merge', { contact_ids, fields });
       setSuccess('Contacts merged successfully!');
-      setTimeout(() => navigate(`/contacts/${res.data.contact.id}`), 1200);
+      navigate(`/data-utility`);
+      setTimeout(() => navigate(`/contacts/${res.data.contact.id}`), 12000);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to merge contacts');
     } finally {

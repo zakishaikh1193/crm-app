@@ -119,8 +119,11 @@ const EmailFinderPage: React.FC = () => {
                 <Button variant="contained" color="primary" onClick={handleSave} disabled={saving} sx={{ fontWeight: 600, borderRadius: 3 }}>
                   {saving ? 'Saving...' : 'Save Email'}
                 </Button>
-                <Button variant="outlined" onClick={() => navigate(`/contacts/${id}`)} sx={{ borderRadius: 3 }}>
+                {/* <Button variant="outlined" onClick={() => navigate(`/contacts/${id}`)} sx={{ borderRadius: 3 }}>
                   Back to Contact
+                </Button> */}
+                <Button variant="outlined" onClick={() => navigate(`/missing-emails`)} sx={{ borderRadius: 3 }}>
+                  Back to Missing Emails
                 </Button>
               </Box>
               {saveSuccess && <Alert severity="success" sx={{ mt: 2 }}>{saveSuccess}</Alert>}

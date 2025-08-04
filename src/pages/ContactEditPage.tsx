@@ -183,7 +183,8 @@ const ContactEditPage: React.FC = () => {
     try {
       setSaving(true);
       await api.put(`/contacts/${id}`, contact);
-      navigate(`/contacts/${id}`);
+      navigate(`/contacts`);
+      window.alert('Contact updated successfully');
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to update contact');
     } finally {
@@ -315,7 +316,7 @@ const ContactEditPage: React.FC = () => {
         <Box>
           <Button
             startIcon={<ArrowBack />}
-            onClick={() => navigate(`/contacts/${id}`)}
+            onClick={() => navigate(`/contacts`)}
             sx={{ mb: 1 }}
           >
             Back to Contact
@@ -328,7 +329,7 @@ const ContactEditPage: React.FC = () => {
           <Button
             variant="outlined"
             startIcon={<Cancel />}
-            onClick={() => navigate(`/contacts/${id}`)}
+            onClick={() => navigate(`/contacts`)}
           >
             Cancel
           </Button>
