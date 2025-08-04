@@ -34,6 +34,9 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Autocomplete,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import {
   Add,
@@ -75,6 +78,24 @@ interface Company {
   city?: string;
 }
 
+interface FilterOptions {
+  companies: { id: number; name: string }[];
+  industries: string[];
+  departments: { id: number; name: string }[];
+}
+
+interface Filters {
+  company: number[];
+  industry: string[];
+  department: number[];
+}
+
+const initialFilters: Filters = {
+  company: [],
+  industry: [],
+  department: [],
+};
+
 interface Contact {
   id: number;
   full_name?: string;
@@ -112,6 +133,14 @@ const ContactListPage: React.FC = () => {
   const [csvUploading, setCsvUploading] = useState(false);
   const [csvResults, setCsvResults] = useState<any>(null);
   const [searchTimeout, setSearchTimeout] = useState<number | null>(null);
+  
+  // Filter states
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>({
+    companies: [],
+    industries: [],
+    departments: [],
+  });
+  const [filters, setFilters] = useState<Filters>({ ...initialFilters });
 
   const itemsPerPage = 10;
 
@@ -131,9 +160,14 @@ const ContactListPage: React.FC = () => {
   }, [searchTimeout]);
 
   useEffect(() => {
+    fetchFilterOptions();
     fetchContacts();
     fetchStatuses();
-  }, [currentPage, searchTerm, statusFilter]);
+  }, []);
+
+  useEffect(() => {
+    fetchContacts();
+  }, [currentPage, searchTerm, statusFilter, filters]);
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -143,6 +177,26 @@ const ContactListPage: React.FC = () => {
       }
     };
   }, [searchTimeout]);
+
+  // Reset page to 1 when filters change
+  useEffect(() => { setCurrentPage(1); }, [filters]);
+
+  // Helper to build chips for active filters
+  const getActiveFilterChips = () => {
+    const chips: { label: string; value: string; key: keyof Filters }[] = [];
+    if (filters.company.length) chips.push({ label: 'Company', value: filterOptions.companies.filter(c => filters.company.includes(c.id)).map(c => c.name).join(', '), key: 'company' });
+    if (filters.industry.length) chips.push({ label: 'Industry', value: filters.industry.join(', '), key: 'industry' });
+    if (filters.department.length) chips.push({ label: 'Department', value: filterOptions.departments.filter(d => filters.department.includes(d.id)).map(d => d.name).join(', '), key: 'department' });
+    return chips;
+  };
+
+  const handleChipDelete = (key: keyof Filters) => {
+    setFilters(prev => ({ ...prev, [key]: Array.isArray(prev[key]) ? [] : (typeof prev[key] === 'boolean' ? null : '') }));
+  };
+
+  const handleFilterChange = (key: keyof Filters, value: any) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
 
   const fetchContacts = async () => {
     try {
@@ -165,6 +219,11 @@ const ContactListPage: React.FC = () => {
         params.append('status', statusFilter);
       }
 
+      // Add filters to params (use pipe | as delimiter for multi-select)
+      if (filters.company.length) params.append('company', filters.company.join('|'));
+      if (filters.industry.length) params.append('industry', filters.industry.join('|'));
+      if (filters.department.length) params.append('department', filters.department.join('|'));
+
       const response = await api.get(`/contacts?${params.toString()}`);
       setContacts(response.data.contacts);
       setTotalPages(response.data.pagination.total_pages);
@@ -175,6 +234,15 @@ const ContactListPage: React.FC = () => {
     } finally {
       setLoading(false);
       setSearching(false);
+    }
+  };
+
+  const fetchFilterOptions = async () => {
+    try {
+      const res = await api.get('/contacts/filter-options');
+      setFilterOptions(res.data);
+    } catch (err) {
+      // Optionally handle error
     }
   };
 
@@ -546,6 +614,20 @@ const ContactListPage: React.FC = () => {
         </Slide>
       )}
 
+      {/* Filter chips bar */}
+      <Box mb={2} display="flex" flexWrap="wrap" gap={1}>
+        {getActiveFilterChips().map(chip => (
+          <Chip
+            key={chip.key}
+            label={`${chip.label}: ${chip.value}`}
+            onDelete={() => handleChipDelete(chip.key)}
+            color="primary"
+            variant="outlined"
+            sx={{ fontWeight: 600 }}
+          />
+        ))}
+      </Box>
+
       {/* Search and Filter */}
       <Grow in={true} timeout={1000}>
         <Card
@@ -624,28 +706,43 @@ const ContactListPage: React.FC = () => {
                   ))}
                 </Select>
               </FormControl>
+              <Autocomplete
+                multiple
+                options={filterOptions.companies}
+                getOptionLabel={option => option.name}
+                value={filterOptions.companies.filter(c => filters.company.includes(c.id))}
+                onChange={(_, value) => setFilters(prev => ({ ...prev, company: value.map(v => v.id) }))}
+                renderInput={params => <TextField {...params} label="Company" size="small" margin="dense" />} 
+                filterSelectedOptions
+                disableCloseOnSelect
+                sx={{ minWidth: 220 }}
+              />
+              <Autocomplete
+                multiple
+                options={filterOptions.departments}
+                getOptionLabel={option => option.name}
+                value={filterOptions.departments.filter(d => filters.department.includes(d.id))}
+                onChange={(_, value) => setFilters(prev => ({ ...prev, department: value.map(v => v.id) }))}
+                renderInput={params => <TextField {...params} label="Department" size="small" margin="dense" />} 
+                filterSelectedOptions
+                disableCloseOnSelect
+                sx={{ minWidth: 180 }}
+              />
+              <Autocomplete
+                multiple
+                options={filterOptions.industries}
+                value={filters.industry}
+                onChange={(_, value) => setFilters(prev => ({ ...prev, industry: value }))}
+                renderInput={params => <TextField {...params} label="Industry" size="small" margin="dense" />} 
+                filterSelectedOptions
+                disableCloseOnSelect
+                sx={{ minWidth: 180 }}
+              />
             </Box>
             
-            {/* Search Tips */}
-            {displaySearchTerm && (
-              <Box sx={{ mt: 2, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.1)' }}>
-                <Typography variant="body2" sx={{ color: '#6366f1', fontWeight: 600, mb: 1 }}>
-                  🔍 Smart Search:
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 0.5 }}>
-                  • <strong>Names:</strong> "Eric Brooks" or "Brooks Eric" - both work! Handles name reversals.
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 0.5 }}>
-                  • <strong>Companies:</strong> "Wiley" finds both people named Wiley AND contacts from Wiley company.
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 0.5 }}>
-                  • <strong>Smart Ranking:</strong> Prioritizes exact name matches, then company matches, then partial matches.
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>
-                  • <strong>Multi-field:</strong> Searches names, emails, companies, titles, and departments.
-                </Typography>
-              </Box>
-            )}
+
+
+            
           </Box>
         </Card>
       </Grow>
